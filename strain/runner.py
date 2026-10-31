@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TextIO
 
 from . import ctest, git
-from .build import CompilationDatabase, build
+from .build import CompilationDatabase, CompileCommand, build, read_cmake_cache, read_cxx_compiler
 from .config import CONFIG_FILE, Config, load_config
 from .console import BOLD, DIM, RED, STATE_STYLES, Console, UiMode, plural
 from .coverage import FileCoverage, GcovCoverage
@@ -26,7 +26,16 @@ from .results import (
     combine,
     mutation_score,
 )
-from .safety_nets import Level, SafetyNet, describe_missing, missing_safety_nets, resolve_levels
+from .prerequisites import gcov_version_text, no_coverage_data, prerequisite_problems
+from .safety_nets import (
+    Level,
+    SafetyNet,
+    build_wide_problems,
+    describe_build_wide,
+    describe_missing,
+    missing_safety_nets,
+    resolve_levels,
+)
 
 BASELINE_TIMEOUT_SECONDS = 600.0
 MINIMUM_TIMEOUT_SECONDS = 10.0
@@ -66,13 +75,12 @@ class SourceFile:
 
 
 def cmake_source_dir(build_dir: Path) -> Path:
-    cache = build_dir / "CMakeCache.txt"
-    if not cache.is_file():
+    if not (build_dir / "CMakeCache.txt").is_file():
         raise StrainError(f"{build_dir} is not a CMake build directory (no CMakeCache.txt)")
-    for line in cache.read_text(errors="replace").splitlines():
-        if line.startswith("CMAKE_HOME_DIRECTORY:"):
-            return Path(line.partition("=")[2]).resolve()
-    raise StrainError(f"{cache} does not name a source directory")
+    source_dir = read_cmake_cache(build_dir).get("CMAKE_HOME_DIRECTORY")
+    if not source_dir:
+        raise StrainError(f"{build_dir / 'CMakeCache.txt'} does not name a source directory")
+    return Path(source_dir).resolve()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +127,7 @@ class Runner:
         self.since: dict[str, set[int]] | None = None
         self.killed: set[str] = set()
         self.build_is_mutated = False
+        self.coverage_verified = False
 
     def show_banner(self) -> None:
         console = self.console
@@ -144,7 +153,10 @@ class Runner:
         self.config = load_config(self.source_dir)
         self.console.step(self.describe_config())
         self.database = CompilationDatabase.load(self.build_dir)
-        self.check_safety_nets()
+        commands = self.project_commands()
+        self.console.step(f"compilation database: {plural(len(commands), 'project translation unit')}")
+        self.check_prerequisites(commands)
+        self.check_safety_nets(commands)
         self.build_or_fail(
             f"building {self.build_dir}",
             "unmutated build is up to date",
@@ -169,14 +181,29 @@ class Runner:
     def is_project_source(self, path: Path) -> bool:
         return path.is_relative_to(self.source_dir) and not path.is_relative_to(self.build_dir)
 
-    def check_safety_nets(self) -> None:
+    def project_commands(self) -> list[CompileCommand]:
+        return [command for command in self.database.commands if self.is_project_source(command.file)]
+
+    def check_prerequisites(self, commands: Sequence[CompileCommand]) -> None:
+        problems = prerequisite_problems(commands, read_cxx_compiler(self.build_dir), gcov_version_text())
+        if problems:
+            raise StrainError("\n".join([*problems, "these prerequisites cannot be ignored; fix the build folder"]))
+        self.console.step("coverage instrumentation is enabled and gcov matches the compiler")
+
+    def safety_net_failures(self, commands: Sequence[CompileCommand]) -> dict[SafetyNet, str]:
+        build_wide = build_wide_problems(read_cmake_cache(self.build_dir), self.database.commands)
+        failures = {net: describe_build_wide(net, evidence) for net, evidence in build_wide.items()}
+        failures.update((net, describe_missing(net, files)) for net, files in missing_safety_nets(commands).items())
+        return failures
+
+    def check_safety_nets(self, commands: Sequence[CompileCommand]) -> None:
         levels = resolve_levels(self.config.safety_nets, self.options.safety_nets)
-        commands = [command for command in self.database.commands if self.is_project_source(command.file)]
-        self.console.step(f"compilation database: {plural(len(commands), 'project translation unit')}")
-        missing = missing_safety_nets(commands)
+        missing = self.safety_net_failures(commands)
         errors: list[str] = []
-        for net, files in missing.items():
-            message = describe_missing(net, files)
+        for net in SafetyNet:
+            if net not in missing:
+                continue
+            message = missing[net]
             if levels[net] is Level.ERROR:
                 errors.append(message)
             elif levels[net] is Level.WARN:
@@ -187,7 +214,7 @@ class Runner:
             raise StrainError("\n".join([*errors, "rebuild with the flags from the README or pass --safety-nets=warn"]))
         present = [net for net in SafetyNet if net not in missing]
         if present:
-            self.console.step(f"safety nets in every translation unit: {', '.join(present)}")
+            self.console.step(f"safety nets that hold for the whole build: {', '.join(present)}")
 
     def source_files(self, coverage: dict[Path, FileCoverage]) -> list[SourceFile]:
         files: list[SourceFile] = []
@@ -274,7 +301,9 @@ class Runner:
         timeout = self.run_baseline(test, events)
         if timeout is None:
             return []
-        planned = self.plan_mutants(self.source_files(self.coverage.collect()))
+        coverage = self.coverage.collect()
+        self.verify_coverage_data(test, coverage)
+        planned = self.plan_mutants(self.source_files(coverage))
         width = len(str(len(planned)))
         results: list[MutantResult] = []
         for number, entry in enumerate(planned, start=1):
@@ -290,6 +319,14 @@ class Runner:
             self.show_mutant(progress, entry.mutant, outcome.state, outcome.detail)
         self.rebuild_if_mutated()
         return results
+
+    def verify_coverage_data(self, test: str, coverage: dict[Path, FileCoverage]) -> None:
+        if self.coverage_verified:
+            return
+        if not any(self.is_project_source(path.resolve()) for path in coverage):
+            raise StrainError(no_coverage_data(test))
+        self.coverage_verified = True
+        self.console.step("the tests write coverage data for project sources")
 
     def rebuild_if_mutated(self) -> None:
         if self.build_is_mutated:
@@ -373,6 +410,15 @@ class Runner:
             self.console.line(f"  {self.console.paint(summary_line(test, test_results, width), BOLD)}")
         return results
 
+    def require_mutants(self, combined: Sequence[CombinedResult]) -> None:
+        """Without --since, a run that mutated nothing tested nothing, so it must not pass."""
+        if combined or self.options.since is not None:
+            return
+        raise StrainError(
+            "no mutant was generated for any test, so nothing was mutation tested; check that the tests pass, that "
+            f"the build writes coverage data and that {CONFIG_FILE} does not exclude every source"
+        )
+
     def run(self) -> int:
         start = time.monotonic()
         self.show_banner()
@@ -386,6 +432,7 @@ class Runner:
             if self.options.resume:
                 self.console.step(f"resuming: {plural(len(events.previous_results()), 'earlier result')} reused")
             combined = combine(self.run_tests(tests, events))
+            self.require_mutants(combined)
             score = mutation_score(entry.state for entry in combined)
             report_path = self.write_report(combined)
             events.emit("finished", score=score)

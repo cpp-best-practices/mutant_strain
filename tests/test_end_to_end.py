@@ -19,16 +19,18 @@ def run_checked(*command: str | Path, cwd: Path) -> None:
     subprocess.run([str(part) for part in command], cwd=cwd, check=True, capture_output=True)
 
 
-def configure_project(root: Path, build_dir: Path, cxx_flags: str = CXX_FLAGS) -> None:
+def configure_project(
+    root: Path, build_dir: Path, cxx_flags: str = CXX_FLAGS, build_type: str = "Debug", linker_flags: str = LINKER_FLAGS
+) -> None:
     run_checked("git", "init", "-q", cwd=root)
     run_checked("git", "add", ".", cwd=root)
     run_checked("git", "-c", "user.name=strain", "-c", "user.email=strain@example.com", "commit", "-qm", "fixture", cwd=root)
     run_checked(
         "cmake", "-S", root, "-B", build_dir,
-        "-DCMAKE_BUILD_TYPE=Debug",
+        f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         f"-DCMAKE_CXX_FLAGS={cxx_flags}",
-        f"-DCMAKE_EXE_LINKER_FLAGS={LINKER_FLAGS}",
+        f"-DCMAKE_EXE_LINKER_FLAGS={linker_flags}",
         cwd=root,
     )
     run_checked("cmake", "--build", build_dir, cwd=root)
@@ -134,6 +136,31 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("auto_var_init", stderr)
         self.assertIn("add -D_GLIBCXX_ASSERTIONS", stderr)
         self.assertIn("add -ftrivial-auto-var-init=pattern", stderr)
+
+    def test_release_build_is_refused_because_ndebug_removes_assertions(self) -> None:
+        configure_project(self.root, self.build_dir, build_type="Release")
+
+        exit_code, _, stderr = run_strain("--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir))
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("error:", stderr)
+        self.assertIn("safety net ndebug fails", stderr)
+        self.assertIn("compiles out every assert()", stderr)
+        self.assertIn("warning: safety net optimization fails", stderr)
+
+    def test_build_without_coverage_fails_even_when_safety_nets_are_ignored(self) -> None:
+        configure_project(
+            self.root, self.build_dir, cxx_flags="-fsanitize=address,undefined", linker_flags="-fsanitize=address,undefined"
+        )
+
+        exit_code, _, stderr = run_strain(
+            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "--safety-nets", "ignore",
+            "--threshold", "50",
+        )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("no project translation unit is built with coverage instrumentation", stderr)
+        self.assertIn("cannot be ignored", stderr)
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)
