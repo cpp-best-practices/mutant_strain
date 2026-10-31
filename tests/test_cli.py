@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from strain.cli import build_parser, options_from_arguments
+from strain.console import UiMode
 from strain.safety_nets import Level
 
 
@@ -25,7 +26,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertIsNone(options.max_per_line)
         self.assertFalse(options.resume)
         self.assertFalse(options.show_all)
-        self.assertFalse(options.json_ui)
+        self.assertIs(options.ui, UiMode.AUTO)
         self.assertEqual(options.report_dir, Path("strain-report"))
 
     def test_every_option(self) -> None:
@@ -37,7 +38,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.build_dir, Path("build-strain"))
         self.assertEqual((options.include, options.exclude, options.since), ("parser", "slow", "main"))
         self.assertTrue(options.skip_killed)
-        self.assertTrue(options.json_ui)
+        self.assertIs(options.ui, UiMode.JSON)
         self.assertIs(options.safety_nets, Level.WARN)
         self.assertEqual(options.threshold, 75.5)
         self.assertTrue(options.strict)

@@ -1,6 +1,7 @@
 """The per-test strategy: baseline, generate mutants on covered lines, mutate, rebuild, run, restore."""
 
 import json
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,13 +9,15 @@ from typing import TextIO
 
 from . import ctest, git
 from .build import CompilationDatabase, build
-from .config import Config, load_config
+from .config import CONFIG_FILE, Config, load_config
+from .console import BOLD, DIM, RED, STATE_STYLES, Console, UiMode, plural
 from .coverage import FileCoverage, GcovCoverage
 from .journal import Journal
 from .mutators import Mutant, apply_mutant, generate_mutants, suppressed_lines
 from .report import EventLog, action_items, compiler_warning, mutation_testing_elements, summary_line
 from .results import (
     DETECTED_STATES,
+    CombinedResult,
     MutantResult,
     MutantState,
     SurvivorKind,
@@ -23,7 +26,7 @@ from .results import (
     combine,
     mutation_score,
 )
-from .safety_nets import Level, describe_missing, missing_safety_nets, resolve_levels
+from .safety_nets import Level, SafetyNet, describe_missing, missing_safety_nets, resolve_levels
 
 BASELINE_TIMEOUT_SECONDS = 600.0
 MINIMUM_TIMEOUT_SECONDS = 10.0
@@ -50,7 +53,7 @@ class RunOptions:
     max_per_line: int | None = None
     resume: bool = False
     show_all: bool = False
-    json_ui: bool = False
+    ui: UiMode = UiMode.AUTO
     report_dir: Path = Path("strain-report")
 
 
@@ -72,6 +75,27 @@ def cmake_source_dir(build_dir: Path) -> Path:
     raise StrainError(f"{cache} does not name a source directory")
 
 
+@dataclass(frozen=True, slots=True)
+class PlannedMutant:
+    source: SourceFile
+    suppressed: frozenset[int]
+    mutant: Mutant
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    state: MutantState
+    survivor: SurvivorKind | None = None
+    detail: str = ""
+
+
+def describe_mutant(mutant: Mutant) -> str:
+    return (
+        f"{mutant.file}:{mutant.line}:{mutant.column} [{mutant.operator}] "
+        f"`{mutant.original}` → `{mutant.replacement}`"
+    )
+
+
 def survivor_kind(coverage: FileCoverage, line: int) -> SurvivorKind | None:
     line_coverage = coverage.lines.get(line)
     if line_coverage is None or line_coverage.branches == 0:
@@ -85,7 +109,7 @@ class Runner:
     def __init__(self, options: RunOptions, out: TextIO, err: TextIO) -> None:
         self.options = options
         self.out = out
-        self.err = err
+        self.console = Console(out, err, options.ui)
         self.build_dir = options.build_dir.resolve()
         self.source_dir = cmake_source_dir(self.build_dir)
         self.journal = Journal(self.build_dir / "strain-journal")
@@ -96,25 +120,51 @@ class Runner:
         self.killed: set[str] = set()
         self.build_is_mutated = False
 
-    def log(self, message: str) -> None:
-        if not self.options.json_ui:
-            print(message, file=self.out, flush=True)
+    def show_banner(self) -> None:
+        console = self.console
+        console.line(f"{console.paint('strain', BOLD)} {console.paint('mutation testing for CMake/CTest', DIM)}")
+        console.field("source", str(self.source_dir), 7)
+        console.field("build", str(self.build_dir), 7)
+        console.field("reports", str(self.options.report_dir), 7)
 
-    def warn(self, message: str) -> None:
-        print(f"strain: warning: {message}", file=self.err, flush=True)
+    def build_or_fail(self, activity: str, success: str, failure: str) -> None:
+        self.console.status(f"  {activity}…")
+        start = time.monotonic()
+        if not build(self.build_dir):
+            raise StrainError(failure)
+        self.console.step(f"{success} ({time.monotonic() - start:.1f}s)")
 
     def prepare(self) -> None:
+        self.console.heading("Preparing")
         for path in self.journal.recover():
-            self.warn(f"restored {path} from an interrupted run")
+            self.console.warn(f"restored {path} from an interrupted run")
         if not git.is_clean(self.source_dir):
             raise StrainError(f"strain needs a clean working tree: commit or stash the changes in {self.source_dir}")
+        self.console.step("working tree is clean")
         self.config = load_config(self.source_dir)
+        self.console.step(self.describe_config())
         self.database = CompilationDatabase.load(self.build_dir)
         self.check_safety_nets()
-        if not build(self.build_dir):
-            raise StrainError(f"`cmake --build {self.build_dir}` fails before any mutation")
+        self.build_or_fail(
+            f"building {self.build_dir}",
+            "unmutated build is up to date",
+            f"`cmake --build {self.build_dir}` fails before any mutation",
+        )
         if self.options.since is not None:
             self.since = git.changed_lines(self.source_dir, self.options.since)
+            changed = sum(len(lines) for lines in self.since.values())
+            self.console.step(
+                f"--since {self.options.since}: {plural(changed, 'changed line')} in {plural(len(self.since), 'file')}"
+            )
+
+    def describe_config(self) -> str:
+        if not (self.source_dir / CONFIG_FILE).is_file():
+            return f"no {CONFIG_FILE}; using defaults"
+        config = self.config
+        return (
+            f"loaded {CONFIG_FILE}: {plural(len(config.exclude), 'exclude pattern')}, "
+            f"{plural(len(config.arid), 'arid pattern')}, {plural(len(config.ignored_mutants), 'ignored mutant')}"
+        )
 
     def is_project_source(self, path: Path) -> bool:
         return path.is_relative_to(self.source_dir) and not path.is_relative_to(self.build_dir)
@@ -122,15 +172,22 @@ class Runner:
     def check_safety_nets(self) -> None:
         levels = resolve_levels(self.config.safety_nets, self.options.safety_nets)
         commands = [command for command in self.database.commands if self.is_project_source(command.file)]
+        self.console.step(f"compilation database: {plural(len(commands), 'project translation unit')}")
+        missing = missing_safety_nets(commands)
         errors: list[str] = []
-        for net, files in missing_safety_nets(commands).items():
+        for net, files in missing.items():
             message = describe_missing(net, files)
             if levels[net] is Level.ERROR:
                 errors.append(message)
             elif levels[net] is Level.WARN:
-                self.warn(message)
+                self.console.warn(message)
+            else:
+                self.console.note(f"safety net {net} is missing but ignored by configuration")
         if errors:
             raise StrainError("\n".join([*errors, "rebuild with the flags from the README or pass --safety-nets=warn"]))
+        present = [net for net in SafetyNet if net not in missing]
+        if present:
+            self.console.step(f"safety nets in every translation unit: {', '.join(present)}")
 
     def source_files(self, coverage: dict[Path, FileCoverage]) -> list[SourceFile]:
         files: list[SourceFile] = []
@@ -151,62 +208,96 @@ class Runner:
             lines &= self.since.get(source.relative, set())
         return generate_mutants(source.relative, source.text, lines, self.options.max_per_line)
 
-    def evaluate(self, test: str, source: SourceFile, mutant: Mutant, timeout: float) -> MutantState:
+    def plan_mutants(self, sources: Sequence[SourceFile]) -> list[PlannedMutant]:
+        executed = sum(len(source.coverage.executed_lines()) for source in sources)
+        self.console.step(f"coverage: {plural(executed, 'executed line')} in {plural(len(sources), 'project file')}")
+        planned: list[PlannedMutant] = []
+        for source in sources:
+            suppressed = frozenset(suppressed_lines(source.text, self.config.arid))
+            mutants = self.mutants_for(source)
+            lines = {mutant.line for mutant in mutants}
+            self.console.note(f"{source.relative}: {plural(len(mutants), 'mutant')} on {plural(len(lines), 'line')}")
+            planned += [PlannedMutant(source, suppressed, mutant) for mutant in mutants]
+        if not planned:
+            self.console.note("no mutants on the lines this test executes")
+        return planned
+
+    def evaluate(self, test: str, planned: PlannedMutant, timeout: float, label: str) -> Outcome:
+        source, mutant = planned.source, planned.mutant
         mutated = apply_mutant(source.text, mutant).encode(SOURCE_ENCODING, SOURCE_ERRORS)
         self.build_is_mutated = True
         with self.journal.mutated(source.path, mutated):
             command = self.database.command_for(source.path)
+            self.console.status(f"{label}  checking syntax…")
             if command is not None and not command.passes_syntax_check():
-                return MutantState.COMPILE_ERROR
+                return Outcome(MutantState.COMPILE_ERROR, detail="rejected by -fsyntax-only")
+            self.console.status(f"{label}  building…")
             if not build(self.build_dir):
-                return MutantState.COMPILE_ERROR
-            return classify_run(ctest.run_test(self.build_dir, test, timeout))
+                return Outcome(MutantState.COMPILE_ERROR, detail="build failed")
+            self.console.status(f"{label}  running {test}…")
+            run = ctest.run_test(self.build_dir, test, timeout)
+        state = classify_run(run)
+        survivor = survivor_kind(source.coverage, mutant.line) if state is MutantState.SURVIVED else None
+        return Outcome(state, survivor, f"{run.duration:.2f}s" if survivor is None else f"{run.duration:.2f}s, {survivor}")
 
     def run_baseline(self, test: str, events: EventLog) -> float | None:
         self.coverage.reset()
+        self.console.status(f"  running {test} without mutation…")
         baseline = ctest.run_test(self.build_dir, test, BASELINE_TIMEOUT_SECONDS)
         problem = baseline_problem(baseline)
         events.emit("baseline", test=test, duration=baseline.duration, problem=problem)
         if problem is None:
-            return max(MINIMUM_TIMEOUT_SECONDS, baseline.duration * TIMEOUT_FACTOR)
+            timeout = max(MINIMUM_TIMEOUT_SECONDS, baseline.duration * TIMEOUT_FACTOR)
+            self.console.step(f"baseline passed in {baseline.duration:.2f}s; mutants time out after {timeout:.0f}s")
+            return timeout
         if self.options.strict:
             raise StrainError(f"test {test} {problem}; excluded tests are fatal with --strict")
-        self.warn(f"test {test} {problem}; excluding it")
+        self.console.warn(f"test {test} {problem}; excluding it")
         return None
 
-    def mutant_state(
-        self, test: str, source: SourceFile, mutant: Mutant, suppressed: set[int], timeout: float, events: EventLog
-    ) -> tuple[MutantState, SurvivorKind | None] | None:
+    def outcome_for(
+        self, test: str, planned: PlannedMutant, timeout: float, events: EventLog, label: str
+    ) -> Outcome | None:
+        mutant = planned.mutant
         previous = events.previous_results().get((test, mutant.id))
         if previous is not None:
-            return previous
-        if mutant.line in suppressed or mutant.id in self.config.ignored_mutants:
-            return MutantState.IGNORED, None
+            return Outcome(*previous, detail="from the interrupted run")
+        if mutant.line in planned.suppressed:
+            return Outcome(MutantState.IGNORED, detail="line suppressed by a mutate-off comment or arid pattern")
+        if mutant.id in self.config.ignored_mutants:
+            return Outcome(MutantState.IGNORED, detail=f"ignored in {CONFIG_FILE}")
         if self.options.skip_killed and mutant.id in self.killed:
             return None
-        state = self.evaluate(test, source, mutant, timeout)
-        return state, survivor_kind(source.coverage, mutant.line) if state is MutantState.SURVIVED else None
+        return self.evaluate(test, planned, timeout, label)
 
     def run_test(self, test: str, events: EventLog) -> list[MutantResult]:
         timeout = self.run_baseline(test, events)
         if timeout is None:
             return []
+        planned = self.plan_mutants(self.source_files(self.coverage.collect()))
+        width = len(str(len(planned)))
         results: list[MutantResult] = []
-        for source in self.source_files(self.coverage.collect()):
-            suppressed = suppressed_lines(source.text, self.config.arid)
-            for mutant in self.mutants_for(source):
-                outcome = self.mutant_state(test, source, mutant, suppressed, timeout, events)
-                if outcome is None:
-                    continue
-                state, survivor = outcome
-                results.append(MutantResult(mutant, test, state, survivor, source.coverage.function_at(mutant.line)))
-                self.record(results[-1], events)
+        for number, entry in enumerate(planned, start=1):
+            progress = f"[{number:>{width}}/{len(planned)}]"
+            label = f"  {progress} {describe_mutant(entry.mutant)}"
+            outcome = self.outcome_for(test, entry, timeout, events, label)
+            if outcome is None:
+                self.show_mutant(progress, entry.mutant, "skipped", "already killed by an earlier test")
+                continue
+            function = entry.source.coverage.function_at(entry.mutant.line)
+            results.append(MutantResult(entry.mutant, test, outcome.state, outcome.survivor, function))
+            self.record(results[-1], events)
+            self.show_mutant(progress, entry.mutant, outcome.state, outcome.detail)
         self.rebuild_if_mutated()
         return results
 
     def rebuild_if_mutated(self) -> None:
-        if self.build_is_mutated and not build(self.build_dir):
-            raise StrainError(f"`cmake --build {self.build_dir}` fails after restoring the sources")
+        if self.build_is_mutated:
+            self.build_or_fail(
+                "rebuilding the restored sources",
+                "sources restored and rebuilt",
+                f"`cmake --build {self.build_dir}` fails after restoring the sources",
+            )
         self.build_is_mutated = False
 
     def record(self, result: MutantResult, events: EventLog) -> None:
@@ -218,49 +309,97 @@ class Runner:
             operator=mutant.operator, original=mutant.original, replacement=mutant.replacement,
             state=result.state, survivor=result.survivor,
         )
-        self.log(
-            f"  {mutant.id} {mutant.file}:{mutant.line}:{mutant.column} [{mutant.operator}] "
-            f"`{mutant.original}` → `{mutant.replacement}`: {result.state}"
+
+    def show_mutant(self, progress: str, mutant: Mutant, state: str, detail: str) -> None:
+        console = self.console
+        console.line(
+            f"  {console.paint(progress, DIM)} {console.state(state)} {describe_mutant(mutant)}"
+            f"  {console.paint(f'{detail}  id {mutant.id}', DIM)}"
         )
 
-    def write_report(self, results: Sequence[MutantResult]) -> float | None:
-        combined = combine(results)
+    def write_report(self, combined: Sequence[CombinedResult]) -> Path:
         sources = {
             entry.mutant.file: (self.source_dir / entry.mutant.file).read_bytes().decode(SOURCE_ENCODING, SOURCE_ERRORS)
             for entry in combined
         }
         report_path = self.options.report_dir / "report.json"
         report_path.write_text(json.dumps(mutation_testing_elements(combined, sources), indent=2, ensure_ascii=False))
-        for entry in combined:
-            if entry.state is MutantState.SURVIVED:
-                self.log(compiler_warning(entry, self.source_dir))
+        return report_path
+
+    def show_survivors(self, combined: Sequence[CombinedResult]) -> None:
+        survivors = [entry for entry in combined if entry.state is MutantState.SURVIVED]
+        if survivors:
+            self.console.heading(f"Survivors ({len(survivors)})")
+            for entry in survivors:
+                self.console.line(compiler_warning(entry, self.source_dir))
+
+    def show_action_items(self, combined: Sequence[CombinedResult]) -> None:
         items = action_items(combined, limit=None if self.options.show_all else DEFAULT_ACTION_ITEMS)
         if items:
-            self.log("\nAction items")
+            self.console.heading("Action items")
             for number, item in enumerate(items, start=1):
-                self.log(f"  {number}. {item}")
-        return mutation_score(entry.state for entry in combined)
+                self.console.line(f"  {number}. {item}")
+
+    def show_summary(self, combined: Sequence[CombinedResult], score: float | None, report_path: Path) -> None:
+        console = self.console
+        console.heading("Summary")
+        states = [entry.state for entry in combined]
+        counts = [
+            console.paint(f"{state} {states.count(state)}", STATE_STYLES[state])
+            for state in MutantState
+            if state in states
+        ]
+        console.field("mutants", f"{len(combined)}   {'  '.join(counts)}" if counts else "none", 8)
+        percent = None if score is None else score * 100
+        console.line(f"  {console.paint('mutation score', BOLD)} {console.score(percent)}{self.threshold_note(percent)}")
+        console.field("report", str(report_path), 8)
+        console.field("events", str(self.options.report_dir / "events.jsonl"), 8)
+
+    def threshold_note(self, percent: float | None) -> str:
+        threshold = self.options.threshold
+        if threshold is None or percent is None:
+            return ""
+        if percent < threshold:
+            return "   " + self.console.paint(f"✗ below --threshold {threshold:g}%", BOLD + RED)
+        return "   " + self.console.paint(f"✓ meets --threshold {threshold:g}%", DIM)
+
+    def run_tests(self, tests: Sequence[str], events: EventLog) -> list[MutantResult]:
+        width = max(len(test) for test in tests)
+        results: list[MutantResult] = []
+        for number, test in enumerate(tests, start=1):
+            self.console.heading(f"Test {number}/{len(tests)}: {test}")
+            test_results = self.run_test(test, events)
+            results += test_results
+            self.console.line(f"  {self.console.paint(summary_line(test, test_results, width), BOLD)}")
+        return results
 
     def run(self) -> int:
+        start = time.monotonic()
+        self.show_banner()
         self.prepare()
         tests = ctest.list_tests(self.build_dir, self.options.include, self.options.exclude)
         if not tests:
             raise StrainError("no tests selected")
-        width = max(len(test) for test in tests)
-        results: list[MutantResult] = []
-        with EventLog(self.options.report_dir / "events.jsonl", self.out if self.options.json_ui else None,
+        self.console.step(f"selected {plural(len(tests), 'test')}: {', '.join(tests)}")
+        with EventLog(self.options.report_dir / "events.jsonl", self.out if self.options.ui is UiMode.JSON else None,
                       self.options.resume) as events:
-            for test in tests:
-                self.log(f"{test}: running")
-                test_results = self.run_test(test, events)
-                results += test_results
-                self.log(summary_line(test, test_results, width))
-            score = self.write_report(results)
+            if self.options.resume:
+                self.console.step(f"resuming: {plural(len(events.previous_results()), 'earlier result')} reused")
+            combined = combine(self.run_tests(tests, events))
+            score = mutation_score(entry.state for entry in combined)
+            report_path = self.write_report(combined)
             events.emit("finished", score=score)
-        self.log(f"\nmutation score {'n/a' if score is None else f'{score * 100:.1f}%'}")
+        self.show_survivors(combined)
+        self.show_action_items(combined)
+        self.show_summary(combined, score, report_path)
+        self.console.line(f"\n{self.console.paint(f'finished in {time.monotonic() - start:.1f}s', DIM)}")
         threshold = self.options.threshold
         return 1 if threshold is not None and score is not None and score * 100 < threshold else 0
 
 
 def run(options: RunOptions, out: TextIO, err: TextIO) -> int:
-    return Runner(options, out, err).run()
+    runner = Runner(options, out, err)
+    try:
+        return runner.run()
+    finally:
+        runner.console.finish()

@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import FrameType
 
+from .console import BOLD, RED, YELLOW, UiMode, paint, wants_color
 from .runner import RunOptions, StrainError, run
 from .safety_nets import Level
 
@@ -28,7 +29,10 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--skip-killed", action="store_true", help="skip mutants an earlier test already killed")
     parser.add_argument("--engine", choices=["auto", "lexer"], default="auto", help="mutation engine")
     parser.add_argument("--coverage", choices=["auto", "gcov"], default="auto", help="coverage backend")
-    parser.add_argument("--ui", choices=["auto", "log", "json"], default="auto", help="console output")
+    parser.add_argument(
+        "--ui", type=UiMode, choices=list(UiMode), default=UiMode.AUTO,
+        help="console output: auto (live progress and color on a terminal), log (plain lines) or json (events)",
+    )
     parser.add_argument("--safety-nets", type=Level, choices=list(Level), help="level for every safety net check")
     parser.add_argument("--threshold", type=float, metavar="PERCENT", help="exit non-zero below this score")
     parser.add_argument("--strict", action="store_true", help="abort if any test is excluded")
@@ -58,7 +62,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         max_per_line=arguments.max_per_line,
         resume=arguments.resume,
         show_all=arguments.show_all,
-        json_ui=arguments.ui == "json",
+        ui=arguments.ui,
         report_dir=arguments.report_dir,
     )
 
@@ -73,10 +77,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return run(options, sys.stdout, sys.stderr)
     except (StrainError, FileNotFoundError, ValueError, subprocess.CalledProcessError) as error:
-        print(f"strain: error: {error}", file=sys.stderr)
+        print(f"strain: {paint('error:', BOLD + RED, wants_color(sys.stderr))} {error}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
-        print("strain: interrupted; sources restored, continue with --resume", file=sys.stderr)
+        interrupted = paint("interrupted;", BOLD + YELLOW, wants_color(sys.stderr))
+        print(f"strain: {interrupted} sources restored, continue with --resume", file=sys.stderr)
         return 130
     finally:
         signal.signal(signal.SIGTERM, previous_handler)

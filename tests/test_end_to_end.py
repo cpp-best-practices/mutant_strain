@@ -88,6 +88,15 @@ class EndToEndTest(unittest.TestCase):
             ],
         )
         self.assertIn("sample_tests   score 40.0%   killed 1  sanitizer 1  timeout 0  survived 3", stdout)
+        self.assertIn("✓ working tree is clean", stdout)
+        self.assertIn("✓ selected 1 test: sample_tests", stdout)
+        self.assertIn("▸ Test 1/1: sample_tests", stdout)
+        self.assertIn("✓ baseline passed in", stdout)
+        self.assertIn("· src/sample.cpp: 8 mutants on 6 lines", stdout)
+        self.assertIn("[2/8] survived", stdout)
+        self.assertIn("rejected by -fsyntax-only", stdout)
+        self.assertIn("✓ sources restored and rebuilt", stdout)
+        self.assertIn("mutation score 40.0%   ✗ below --threshold 50%", stdout)
         self.assertIn("clamp_to_zero() is pseudo-tested: nothing checks its result", stdout)
         self.assertIn(f"{self.root / 'src' / 'sample.cpp'}:7:13: warning: survived [ror]", stdout)
         self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
@@ -102,6 +111,18 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("other_tests    score 0.0%   killed 0  sanitizer 0  timeout 0  survived 1", stdout)
         self.assertIn("test other_tests kills nothing", stdout)
         self.assertEqual(self.mutant_states()[0], (3, "aor", "-", "killed"))
+
+    def test_json_ui_prints_only_events(self) -> None:
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = run_strain(
+            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^other_tests$",
+            "--ui", "json",
+        )
+
+        self.assertEqual(exit_code, 0, stdout)
+        events = [json.loads(line)["event"] for line in stdout.splitlines()]
+        self.assertEqual(events, ["baseline", "mutant", "finished"])
 
     def test_missing_safety_nets_abort_the_run(self) -> None:
         configure_project(self.root, self.build_dir, cxx_flags="--coverage -fsanitize=address,undefined")
