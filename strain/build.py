@@ -5,7 +5,7 @@ import os
 import re
 import shlex
 import subprocess
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -78,8 +78,26 @@ class CompilationDatabase:
         return self._by_file.get(Path(os.path.normpath(file)))
 
 
-def build(build_dir: Path) -> bool:
-    return subprocess.run(["cmake", "--build", str(build_dir)], capture_output=True).returncode == 0
+def build_command(build_dir: Path) -> list[str]:
+    return ["cmake", "--build", str(build_dir)]
+
+
+def _discard(line: str) -> None:
+    pass
+
+
+def build(build_dir: Path, on_output: Callable[[str], None] = _discard) -> bool:
+    """Runs the incremental build, passing each line it prints to `on_output` as it arrives."""
+    with subprocess.Popen(
+        build_command(build_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+    ) as process:
+        try:
+            for line in process.stdout or ():
+                on_output(line.rstrip("\n"))
+        except BaseException:
+            process.kill()
+            raise
+    return process.returncode == 0
 
 
 def read_cmake_cache(build_dir: Path) -> dict[str, str]:

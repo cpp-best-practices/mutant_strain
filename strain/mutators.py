@@ -135,6 +135,13 @@ def generate_mutants(
     return mutants
 
 
+def describe_mutant(mutant: Mutant) -> str:
+    return (
+        f"{mutant.file}:{mutant.line}:{mutant.column} [{mutant.operator}] "
+        f"`{mutant.original}` → `{mutant.replacement}`"
+    )
+
+
 def apply_mutant(source: str, mutant: Mutant) -> str:
     end = mutant.offset + len(mutant.original)
     if source[mutant.offset : end] != mutant.original:

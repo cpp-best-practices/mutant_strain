@@ -1,6 +1,7 @@
 """The per-test strategy: baseline, generate mutants on covered lines, mutate, rebuild, run, restore."""
 
 import json
+import shlex
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -8,12 +9,13 @@ from pathlib import Path
 from typing import TextIO
 
 from . import ctest, git
-from .build import CompilationDatabase, CompileCommand, build, read_cmake_cache, read_cxx_compiler
+from .build import CompilationDatabase, CompileCommand, build, build_command, read_cmake_cache, read_cxx_compiler
 from .config import CONFIG_FILE, Config, load_config
-from .console import BOLD, DIM, RED, STATE_STYLES, Console, UiMode, plural
+from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, plural
 from .coverage import FileCoverage, GcovCoverage
+from .dashboard import create_console
 from .journal import Journal
-from .mutators import Mutant, apply_mutant, generate_mutants, suppressed_lines
+from .mutators import Mutant, apply_mutant, describe_mutant, generate_mutants, suppressed_lines
 from .report import EventLog, action_items, compiler_warning, mutation_testing_elements, summary_line
 from .results import (
     DETECTED_STATES,
@@ -97,13 +99,6 @@ class Outcome:
     detail: str = ""
 
 
-def describe_mutant(mutant: Mutant) -> str:
-    return (
-        f"{mutant.file}:{mutant.line}:{mutant.column} [{mutant.operator}] "
-        f"`{mutant.original}` → `{mutant.replacement}`"
-    )
-
-
 def survivor_kind(coverage: FileCoverage, line: int) -> SurvivorKind | None:
     line_coverage = coverage.lines.get(line)
     if line_coverage is None or line_coverage.branches == 0:
@@ -117,7 +112,7 @@ class Runner:
     def __init__(self, options: RunOptions, out: TextIO, err: TextIO) -> None:
         self.options = options
         self.out = out
-        self.console = Console(out, err, options.ui)
+        self.console = create_console(out, err, options.ui)
         self.build_dir = options.build_dir.resolve()
         self.source_dir = cmake_source_dir(self.build_dir)
         self.journal = Journal(self.build_dir / "strain-journal")
@@ -136,10 +131,14 @@ class Runner:
         console.field("build", str(self.build_dir), 7)
         console.field("reports", str(self.options.report_dir), 7)
 
+    def build(self) -> bool:
+        self.console.build_started(shlex.join(build_command(self.build_dir)))
+        return build(self.build_dir, self.console.build_output)
+
     def build_or_fail(self, activity: str, success: str, failure: str) -> None:
         self.console.status(f"  {activity}…")
         start = time.monotonic()
-        if not build(self.build_dir):
+        if not self.build():
             raise StrainError(failure)
         self.console.step(f"{success} ({time.monotonic() - start:.1f}s)")
 
@@ -259,7 +258,7 @@ class Runner:
             if command is not None and not command.passes_syntax_check():
                 return Outcome(MutantState.COMPILE_ERROR, detail="rejected by -fsyntax-only")
             self.console.status(f"{label}  building…")
-            if not build(self.build_dir):
+            if not self.build():
                 return Outcome(MutantState.COMPILE_ERROR, detail="build failed")
             self.console.status(f"{label}  running {test}…")
             run = ctest.run_test(self.build_dir, test, timeout)
@@ -304,19 +303,23 @@ class Runner:
         coverage = self.coverage.collect()
         self.verify_coverage_data(test, coverage)
         planned = self.plan_mutants(self.source_files(coverage))
+        self.console.plan([entry.mutant for entry in planned])
         width = len(str(len(planned)))
         results: list[MutantResult] = []
         for number, entry in enumerate(planned, start=1):
             progress = f"[{number:>{width}}/{len(planned)}]"
             label = f"  {progress} {describe_mutant(entry.mutant)}"
+            self.console.mutant_started(number - 1, entry.source.text, entry.mutant)
             outcome = self.outcome_for(test, entry, timeout, events, label)
             if outcome is None:
                 self.show_mutant(progress, entry.mutant, "skipped", "already killed by an earlier test")
+                self.console.mutant_finished(number - 1, "skipped")
                 continue
             function = entry.source.coverage.function_at(entry.mutant.line)
             results.append(MutantResult(entry.mutant, test, outcome.state, outcome.survivor, function))
             self.record(results[-1], events)
             self.show_mutant(progress, entry.mutant, outcome.state, outcome.detail)
+            self.console.mutant_finished(number - 1, outcome.state)
         self.rebuild_if_mutated()
         return results
 
@@ -405,6 +408,7 @@ class Runner:
         results: list[MutantResult] = []
         for number, test in enumerate(tests, start=1):
             self.console.heading(f"Test {number}/{len(tests)}: {test}")
+            self.console.test_started(test, number, len(tests))
             test_results = self.run_test(test, events)
             results += test_results
             self.console.line(f"  {self.console.paint(summary_line(test, test_results, width), BOLD)}")
