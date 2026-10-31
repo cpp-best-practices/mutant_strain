@@ -5,7 +5,7 @@ import os
 import re
 import shlex
 import subprocess
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,12 +80,32 @@ class CompilationDatabase:
         return self._by_file.get(Path(os.path.normpath(file)))
 
 
-def build(build_dir: Path, target: str | None = None) -> bool:
-    """Build `target` and what it depends on, or the whole build folder when there is no target."""
+def build_command(build_dir: Path, target: str | None = None) -> list[str]:
     command = ["cmake", "--build", str(build_dir)]
     if target is not None:
         command += ["--target", target]
-    return subprocess.run(command, capture_output=True).returncode == 0
+    return command
+
+
+def _discard(line: str) -> None:
+    pass
+
+
+def build(build_dir: Path, target: str | None = None, on_output: Callable[[str], None] = _discard) -> bool:
+    """Builds `target` and what it depends on, or the whole build folder when there is no target.
+
+    Passes each line the build prints to `on_output` as it arrives.
+    """
+    with subprocess.Popen(
+        build_command(build_dir, target), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+    ) as process:
+        try:
+            for line in process.stdout or ():
+                on_output(line.rstrip("\n"))
+        except BaseException:
+            process.kill()
+            raise
+    return process.returncode == 0
 
 
 def _file_api_directory(build_dir: Path) -> Path:

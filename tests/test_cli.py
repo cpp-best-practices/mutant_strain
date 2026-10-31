@@ -47,8 +47,11 @@ class RunOptionsTest(unittest.TestCase):
         self.assertTrue(options.show_all)
         self.assertEqual(options.report_dir, Path("out"))
 
+    def test_live_dashboard(self) -> None:
+        self.assertIs(parse("--ui", "live").ui, UiMode.LIVE)
+
     def test_backends_that_do_not_exist_yet_are_rejected(self) -> None:
-        for argv in (["--engine", "cppcheck"], ["--coverage", "llvm-cov"], ["--strategy", "per-mutant"], ["--ui", "live"]):
+        for argv in (["--engine", "cppcheck"], ["--coverage", "llvm-cov"], ["--strategy", "per-mutant"]):
             with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     parse(*argv)
