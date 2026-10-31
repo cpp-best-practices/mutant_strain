@@ -111,6 +111,8 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertIn("stdlib_assertions", stderr)
         self.assertIn("auto_var_init", stderr)
+        self.assertIn("add -D_GLIBCXX_ASSERTIONS", stderr)
+        self.assertIn("add -ftrivial-auto-var-init=pattern", stderr)
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)

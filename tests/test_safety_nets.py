@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 from strain.build import CompileCommand
-from strain.safety_nets import Level, SafetyNet, missing_safety_nets, resolve_levels
+from strain.safety_nets import EXPLANATIONS, Level, SafetyNet, describe_missing, missing_safety_nets, resolve_levels
 
 FULL_FLAGS = (
     "g++",
@@ -39,6 +39,20 @@ class MissingSafetyNetsTest(unittest.TestCase):
         flags = ("clang++", "-fsanitize=address,undefined", "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
                  "-ftrivial-auto-var-init=pattern", "-c", "a.cpp")
         self.assertEqual(missing_safety_nets([command("a.cpp", flags)]), {})
+
+
+class DescribeMissingTest(unittest.TestCase):
+    def test_every_safety_net_explains_why_it_matters(self) -> None:
+        self.assertEqual(set(EXPLANATIONS), set(SafetyNet))
+        for net, explanation in EXPLANATIONS.items():
+            with self.subTest(net=net):
+                self.assertIn("mutant", explanation)
+
+    def test_message_names_the_flag_to_add_and_the_reason(self) -> None:
+        message = describe_missing(SafetyNet.AUTO_VAR_INIT, [Path("/s/b.cpp"), Path("/s/c.cpp")])
+        self.assertIn("auto_var_init is missing from 2 translation unit(s), e.g. /s/b.cpp", message)
+        self.assertIn("add -ftrivial-auto-var-init=pattern", message)
+        self.assertIn("uninitialized", message)
 
 
 class ResolveLevelsTest(unittest.TestCase):

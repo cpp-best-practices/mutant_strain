@@ -23,7 +23,7 @@ from .results import (
     combine,
     mutation_score,
 )
-from .safety_nets import Level, missing_safety_nets, resolve_levels
+from .safety_nets import Level, describe_missing, missing_safety_nets, resolve_levels
 
 BASELINE_TIMEOUT_SECONDS = 600.0
 MINIMUM_TIMEOUT_SECONDS = 10.0
@@ -124,7 +124,7 @@ class Runner:
         commands = [command for command in self.database.commands if self.is_project_source(command.file)]
         errors: list[str] = []
         for net, files in missing_safety_nets(commands).items():
-            message = f"safety net {net} is missing from {len(files)} translation unit(s), e.g. {files[0]}"
+            message = describe_missing(net, files)
             if levels[net] is Level.ERROR:
                 errors.append(message)
             elif levels[net] is Level.WARN:
