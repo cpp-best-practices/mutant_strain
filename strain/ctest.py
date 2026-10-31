@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 import re
 import subprocess
 import time
@@ -28,6 +29,19 @@ def list_tests(build_dir: Path, include: str | None, exclude: str | None) -> lis
         command += ["-E", exclude]
     listing = subprocess.run(command, cwd=build_dir, check=True, capture_output=True, text=True)
     return [test["name"] for test in json.loads(listing.stdout)["tests"]]
+
+
+def executables_by_test(build_dir: Path) -> dict[str, Path]:
+    """The program each test runs, for the tests CTest can resolve a command for."""
+    listing = subprocess.run(
+        ["ctest", "--show-only=json-v1"], cwd=build_dir, check=True, capture_output=True, text=True
+    )
+    executables: dict[str, Path] = {}
+    for test in json.loads(listing.stdout)["tests"]:
+        command = test.get("command")
+        if command:
+            executables[test["name"]] = Path(os.path.normpath(build_dir / command[0]))
+    return executables
 
 
 def run_test(build_dir: Path, name: str, timeout: float) -> RunResult:

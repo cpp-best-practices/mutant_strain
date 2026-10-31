@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from strain.cli import main
+from strain.runner import Runner, RunOptions
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_project"
 TOOLS = ("cmake", "ctest", "g++", "gcov", "git")
@@ -161,6 +162,16 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertIn("no project translation unit is built with coverage instrumentation", stderr)
         self.assertIn("cannot be ignored", stderr)
+
+    def test_mutants_rebuild_only_the_target_of_their_test(self) -> None:
+        configure_project(self.root, self.build_dir)
+        runner = Runner(RunOptions(build_dir=self.build_dir), io.StringIO(), io.StringIO())
+
+        runner.prepare()
+
+        self.assertEqual(runner.target_for("sample_tests"), "sample_tests")
+        self.assertEqual(runner.target_for("other_tests"), "other_tests")
+        self.assertIsNone(runner.target_for("unknown_test"))
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)
