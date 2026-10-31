@@ -31,7 +31,10 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--coverage", choices=["auto", "gcov"], default="auto", help="coverage backend")
     parser.add_argument(
         "--ui", type=UiMode, choices=list(UiMode), default=UiMode.AUTO,
-        help="console output: auto (live progress and color on a terminal), log (plain lines) or json (events)",
+        help=(
+            "console output: auto (live progress and color on a terminal), live (full-screen dashboard), "
+            "log (plain lines) or json (events)"
+        ),
     )
     parser.add_argument("--safety-nets", type=Level, choices=list(Level), help="level for every safety net check")
     parser.add_argument("--threshold", type=float, metavar="PERCENT", help="exit non-zero below this score")

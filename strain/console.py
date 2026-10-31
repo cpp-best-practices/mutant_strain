@@ -2,9 +2,10 @@
 
 import enum
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TextIO
 
+from .mutators import Mutant
 from .results import MutantState
 
 RESET = "\033[0m"
@@ -33,8 +34,12 @@ LOW_SCORE = 60.0
 
 class UiMode(enum.StrEnum):
     AUTO = "auto"
+    LIVE = "live"
     LOG = "log"
     JSON = "json"
+
+
+INTERACTIVE_MODES = frozenset({UiMode.AUTO, UiMode.LIVE})
 
 
 def is_terminal(stream: TextIO) -> bool:
@@ -69,8 +74,8 @@ class Console:
         self.out = out
         self.err = err
         self.enabled = mode is not UiMode.JSON
-        self.live = mode is UiMode.AUTO and is_terminal(out)
-        self.color = mode is UiMode.AUTO and wants_color(out)
+        self.live = mode in INTERACTIVE_MODES and is_terminal(out)
+        self.color = mode in INTERACTIVE_MODES and wants_color(out)
         self.err_color = mode is not UiMode.LOG and wants_color(err)
         self._status_shown = False
 
@@ -119,3 +124,22 @@ class Console:
     def warn(self, message: str) -> None:
         self.finish()
         print(f"strain: {paint('warning:', BOLD + YELLOW, self.err_color)} {message}", file=self.err, flush=True)
+
+    # Progress hooks for the live dashboard; plain console output shows the same progress as lines.
+    def test_started(self, name: str, number: int, total: int) -> None:
+        pass
+
+    def plan(self, mutants: Sequence[Mutant]) -> None:
+        pass
+
+    def mutant_started(self, index: int, source: str, mutant: Mutant) -> None:
+        pass
+
+    def mutant_finished(self, index: int, state: str) -> None:
+        pass
+
+    def build_started(self, command: str) -> None:
+        pass
+
+    def build_output(self, line: str) -> None:
+        pass
