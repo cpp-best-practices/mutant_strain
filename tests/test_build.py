@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,10 +8,14 @@ from strain.build import (
     CompileCommand,
     CompilationDatabase,
     CompilerIdentity,
+    build,
     cmake_is_true,
     read_cmake_cache,
     read_cxx_compiler,
+    target_artifacts,
 )
+
+FIXTURE = Path(__file__).parent / "fixtures" / "sample_project"
 
 ENTRIES = [
     {
@@ -110,6 +116,27 @@ class BuildFolderTest(unittest.TestCase):
 
     def test_unknown_compiler_is_none(self) -> None:
         self.assertIsNone(read_cxx_compiler(self.build_dir))
+
+
+@unittest.skipUnless(shutil.which("cmake") and shutil.which("g++"), "needs cmake and g++")
+class TargetBuildTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.build_dir = Path(self._tmp.name).resolve()
+        subprocess.run(["cmake", "-S", str(FIXTURE), "-B", str(self.build_dir)], check=True, capture_output=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_artifacts_map_to_their_targets(self) -> None:
+        artifacts = target_artifacts(self.build_dir)
+        self.assertEqual(artifacts.get(self.build_dir / "sample_tests"), "sample_tests")
+        self.assertEqual(artifacts.get(self.build_dir / "other_tests"), "other_tests")
+
+    def test_building_a_target_leaves_other_targets_alone(self) -> None:
+        self.assertTrue(build(self.build_dir, "sample_tests"))
+        self.assertTrue((self.build_dir / "sample_tests").is_file())
+        self.assertFalse((self.build_dir / "other_tests").exists())
 
 
 if __name__ == "__main__":

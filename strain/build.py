@@ -16,6 +16,8 @@ OUTPUT_FLAGS = frozenset({"-c", "-MD", "-MMD"})
 SOURCE_BASED_COVERAGE_FLAGS = frozenset({"-fprofile-instr-generate", "-fcoverage-mapping"})
 CMAKE_TRUE_VALUES = frozenset({"1", "ON", "YES", "TRUE", "Y"})
 COMPILER_SETTING = re.compile(r'set\((CMAKE_CXX_COMPILER_(?:ID|VERSION)) "([^"]*)"\)')
+FILE_API_CLIENT = "client-strain"
+FILE_API_CODEMODEL = "codemodel-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,8 +80,48 @@ class CompilationDatabase:
         return self._by_file.get(Path(os.path.normpath(file)))
 
 
-def build(build_dir: Path) -> bool:
-    return subprocess.run(["cmake", "--build", str(build_dir)], capture_output=True).returncode == 0
+def build(build_dir: Path, target: str | None = None) -> bool:
+    """Build `target` and what it depends on, or the whole build folder when there is no target."""
+    command = ["cmake", "--build", str(build_dir)]
+    if target is not None:
+        command += ["--target", target]
+    return subprocess.run(command, capture_output=True).returncode == 0
+
+
+def _file_api_directory(build_dir: Path) -> Path:
+    return build_dir / ".cmake" / "api" / "v1"
+
+
+def _read_codemodel_artifacts(reply_dir: Path) -> dict[Path, str]:
+    indexes = sorted(reply_dir.glob("index-*.json"))
+    if not indexes:
+        return {}
+    index = json.loads(indexes[-1].read_text())
+    codemodel = index.get("reply", {}).get(FILE_API_CLIENT, {}).get(FILE_API_CODEMODEL, {})
+    if "jsonFile" not in codemodel:
+        return {}
+    model = json.loads((reply_dir / codemodel["jsonFile"]).read_text())
+    build_dir = Path(model["paths"]["build"])
+    artifacts: dict[Path, str] = {}
+    for configuration in model["configurations"]:
+        for target in configuration["targets"]:
+            details = json.loads((reply_dir / target["jsonFile"]).read_text())
+            for artifact in details.get("artifacts", []):
+                artifacts[Path(os.path.normpath(build_dir / artifact["path"]))] = target["name"]
+    return artifacts
+
+
+def target_artifacts(build_dir: Path) -> dict[Path, str]:
+    """The files the build's targets produce, keyed by absolute path, from the CMake file API.
+
+    Writes a codemodel query and reconfigures the build folder so CMake answers it; empty if that fails.
+    """
+    query = _file_api_directory(build_dir) / "query" / FILE_API_CLIENT / FILE_API_CODEMODEL
+    query.parent.mkdir(parents=True, exist_ok=True)
+    query.touch()
+    if subprocess.run(["cmake", str(build_dir)], capture_output=True).returncode != 0:
+        return {}
+    return _read_codemodel_artifacts(_file_api_directory(build_dir) / "reply")
 
 
 def read_cmake_cache(build_dir: Path) -> dict[str, str]:

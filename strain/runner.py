@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TextIO
 
 from . import ctest, git
-from .build import CompilationDatabase, CompileCommand, build, read_cmake_cache, read_cxx_compiler
+from .build import CompilationDatabase, CompileCommand, build, read_cmake_cache, read_cxx_compiler, target_artifacts
 from .config import CONFIG_FILE, Config, load_config
 from .console import BOLD, DIM, RED, STATE_STYLES, Console, UiMode, plural
 from .coverage import FileCoverage, GcovCoverage
@@ -126,6 +126,7 @@ class Runner:
         self.database = CompilationDatabase([])
         self.since: dict[str, set[int]] | None = None
         self.killed: set[str] = set()
+        self.test_targets: dict[str, str] = {}
         self.build_is_mutated = False
         self.coverage_verified = False
 
@@ -162,12 +163,25 @@ class Runner:
             "unmutated build is up to date",
             f"`cmake --build {self.build_dir}` fails before any mutation",
         )
+        self.test_targets = self.find_test_targets()
         if self.options.since is not None:
             self.since = git.changed_lines(self.source_dir, self.options.since)
             changed = sum(len(lines) for lines in self.since.values())
             self.console.step(
                 f"--since {self.options.since}: {plural(changed, 'changed line')} in {plural(len(self.since), 'file')}"
             )
+
+    def find_test_targets(self) -> dict[str, str]:
+        artifacts = target_artifacts(self.build_dir)
+        return {
+            test: artifacts[executable]
+            for test, executable in ctest.executables_by_test(self.build_dir).items()
+            if executable in artifacts
+        }
+
+    def target_for(self, test: str) -> str | None:
+        """The CMake target that builds the program `test` runs; None rebuilds everything."""
+        return self.test_targets.get(test)
 
     def describe_config(self) -> str:
         if not (self.source_dir / CONFIG_FILE).is_file():
@@ -259,7 +273,7 @@ class Runner:
             if command is not None and not command.passes_syntax_check():
                 return Outcome(MutantState.COMPILE_ERROR, detail="rejected by -fsyntax-only")
             self.console.status(f"{label}  building…")
-            if not build(self.build_dir):
+            if not build(self.build_dir, self.target_for(test)):
                 return Outcome(MutantState.COMPILE_ERROR, detail="build failed")
             self.console.status(f"{label}  running {test}…")
             run = ctest.run_test(self.build_dir, test, timeout)
