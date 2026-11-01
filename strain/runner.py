@@ -23,7 +23,17 @@ from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, plural
 from .coverage import FileCoverage, GcovCoverage
 from .dashboard import create_console
 from .journal import Journal
-from .mutators import Mutant, apply_mutant, describe_mutant, generate_mutants, suppressed_lines
+from .mutators import (
+    Engine,
+    Mutant,
+    apply_mutant,
+    describe_mutant,
+    mutants_at,
+    operator_sites,
+    resolve_engine,
+    suppressed_lines,
+)
+from .operator_sites import EngineError, OperatorSite
 from .report import EventLog, action_items, compiler_warning, mutation_testing_elements, summary_line
 from .results import (
     DETECTED_STATES,
@@ -66,6 +76,7 @@ class RunOptions:
     exclude: str | None = None
     since: str | None = None
     skip_killed: bool = False
+    engine: Engine = Engine.AUTO
     safety_nets: Level | None = None
     threshold: float | None = None
     strict: bool = False
@@ -129,6 +140,8 @@ class Runner:
         self.database = CompilationDatabase([])
         self.since: dict[str, set[int]] | None = None
         self.killed: set[str] = set()
+        self.engine = Engine.LEXER
+        self.sites: dict[str, list[OperatorSite]] = {}
         self.test_targets: dict[str, str] = {}
         self.build_is_mutated = False
         self.coverage_verified = False
@@ -165,6 +178,7 @@ class Runner:
         self.console.step(f"compilation database: {plural(len(commands), 'project translation unit')}")
         self.check_prerequisites(commands)
         self.check_safety_nets(commands)
+        self.engine = self.resolve_engine()
         self.build_or_fail(
             f"building {self.build_dir}",
             "unmutated build is up to date",
@@ -177,6 +191,14 @@ class Runner:
             self.console.step(
                 f"--since {self.options.since}: {plural(changed, 'changed line')} in {plural(len(self.since), 'file')}"
             )
+
+    def resolve_engine(self) -> Engine:
+        try:
+            engine = resolve_engine(self.options.engine)
+        except EngineError as error:
+            raise StrainError(f"{error}, or pass --engine lexer") from error
+        self.console.step(f"mutation engine: {engine}")
+        return engine
 
     def find_test_targets(self) -> dict[str, str]:
         artifacts = target_artifacts(self.build_dir)
@@ -250,11 +272,20 @@ class Runner:
             files.append(SourceFile(resolved, relative, text, file_coverage))
         return sorted(files, key=lambda file: file.relative)
 
+    def sites_for(self, source: SourceFile) -> list[OperatorSite]:
+        """The operators the engine finds in `source`, found once per run since every test restores the sources."""
+        if source.relative not in self.sites:
+            try:
+                self.sites[source.relative] = operator_sites(self.engine, source.text)
+            except EngineError as error:
+                raise StrainError(f"{source.relative}: {error}") from error
+        return self.sites[source.relative]
+
     def mutants_for(self, source: SourceFile) -> list[Mutant]:
         lines = source.coverage.executed_lines()
         if self.since is not None:
             lines &= self.since.get(source.relative, set())
-        return generate_mutants(source.relative, source.text, lines, self.options.max_per_line)
+        return mutants_at(source.relative, self.sites_for(source), lines, self.options.max_per_line)
 
     def plan_mutants(self, sources: Sequence[SourceFile]) -> list[PlannedMutant]:
         executed = sum(len(source.coverage.executed_lines()) for source in sources)

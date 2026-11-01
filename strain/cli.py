@@ -9,6 +9,7 @@ from pathlib import Path
 from types import FrameType
 
 from .console import BOLD, RED, YELLOW, UiMode, paint, wants_color
+from .mutators import Engine
 from .runner import RunOptions, StrainError, run
 from .safety_nets import Level
 
@@ -27,7 +28,10 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--since", metavar="REF", help="mutate only lines changed since a git ref")
     parser.add_argument("--strategy", choices=["per-test"], default="per-test", help="mutation strategy")
     parser.add_argument("--skip-killed", action="store_true", help="skip mutants an earlier test already killed")
-    parser.add_argument("--engine", choices=["auto", "lexer"], default="auto", help="mutation engine")
+    parser.add_argument(
+        "--engine", type=Engine, choices=list(Engine), default=Engine.AUTO,
+        help="mutation engine: auto (the best installed), cppcheck, tree-sitter or lexer",
+    )
     parser.add_argument("--coverage", choices=["auto", "gcov"], default="auto", help="coverage backend")
     parser.add_argument(
         "--ui", type=UiMode, choices=list(UiMode), default=UiMode.AUTO,
@@ -59,6 +63,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         exclude=arguments.exclude,
         since=arguments.since,
         skip_killed=arguments.skip_killed,
+        engine=arguments.engine,
         safety_nets=arguments.safety_nets,
         threshold=arguments.threshold,
         strict=arguments.strict,
