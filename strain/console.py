@@ -5,8 +5,9 @@ import os
 from collections.abc import Mapping, Sequence
 from typing import TextIO
 
+from .coverage import LineCoverage
 from .mutators import Mutant
-from .results import MutantState
+from .results import MutantResult, MutantState
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -138,8 +139,14 @@ class Console:
     def mutant_finished(self, index: int, state: str) -> None:
         pass
 
+    def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
+        pass
+
     def build_started(self, command: str) -> None:
         pass
 
     def build_output(self, line: str) -> None:
+        pass
+
+    def run_finished(self) -> None:
         pass
