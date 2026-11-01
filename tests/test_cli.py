@@ -5,6 +5,7 @@ from pathlib import Path
 
 from strain.cli import build_parser, options_from_arguments
 from strain.console import UiMode
+from strain.mutators import Engine
 from strain.safety_nets import Level
 
 
@@ -26,6 +27,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertIsNone(options.max_per_line)
         self.assertFalse(options.resume)
         self.assertFalse(options.show_all)
+        self.assertIs(options.engine, Engine.AUTO)
         self.assertIs(options.ui, UiMode.AUTO)
         self.assertEqual(options.report_dir, Path("strain-report"))
 
@@ -38,6 +40,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.build_dir, Path("build-strain"))
         self.assertEqual((options.include, options.exclude, options.since), ("parser", "slow", "main"))
         self.assertTrue(options.skip_killed)
+        self.assertIs(options.engine, Engine.LEXER)
         self.assertIs(options.ui, UiMode.JSON)
         self.assertIs(options.safety_nets, Level.WARN)
         self.assertEqual(options.threshold, 75.5)
@@ -50,8 +53,13 @@ class RunOptionsTest(unittest.TestCase):
     def test_live_dashboard(self) -> None:
         self.assertIs(parse("--ui", "live").ui, UiMode.LIVE)
 
+    def test_every_engine_from_the_readme(self) -> None:
+        for engine in Engine:
+            with self.subTest(engine=engine):
+                self.assertIs(parse("--engine", str(engine)).engine, engine)
+
     def test_backends_that_do_not_exist_yet_are_rejected(self) -> None:
-        for argv in (["--engine", "cppcheck"], ["--coverage", "llvm-cov"], ["--strategy", "per-mutant"]):
+        for argv in (["--engine", "clang"], ["--coverage", "llvm-cov"], ["--strategy", "per-mutant"]):
             with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     parse(*argv)

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from strain import cppcheck_engine, tree_sitter_engine
 from strain.cli import main
 from strain.runner import Runner, RunOptions
 
@@ -73,7 +74,7 @@ class EndToEndTest(unittest.TestCase):
 
         exit_code, stdout, _ = run_strain(
             "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^sample_tests$",
-            "--threshold", "50",
+            "--threshold", "50", "--engine", "lexer",
         )
 
         self.assertEqual(exit_code, 1, stdout)
@@ -104,6 +105,36 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn(f"{self.root / 'src' / 'sample.cpp'}:7:13: warning: survived [ror]", stdout)
         self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
         self.assertTrue((self.report_dir / "events.jsonl").is_file())
+
+    def assert_parsing_engine_skips_declarators(self, engine: str) -> None:
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = run_strain(
+            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^sample_tests$",
+            "--engine", engine,
+        )
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertIn(f"✓ mutation engine: {engine}", stdout)
+        self.assertEqual(
+            self.mutant_states(),
+            [
+                (3, "aor", "-", "killed"),
+                (7, "ror", "<=", "survived"),
+                (7, "ror", ">=", "survived"),
+                (11, "lcr", "||", "survived"),
+                (13, "aor", "/", "killed_by_sanitizer"),
+                (15, "aor", "-", "ignored"),
+            ],
+        )
+
+    @unittest.skipUnless(tree_sitter_engine.is_available(), "needs the tree-sitter and tree-sitter-cpp packages")
+    def test_tree_sitter_engine(self) -> None:
+        self.assert_parsing_engine_skips_declarators("tree-sitter")
+
+    @unittest.skipUnless(cppcheck_engine.is_available(), "needs cppcheck on PATH")
+    def test_cppcheck_engine(self) -> None:
+        self.assert_parsing_engine_skips_declarators("cppcheck")
 
     def test_per_test_strategy_combines_results(self) -> None:
         configure_project(self.root, self.build_dir)

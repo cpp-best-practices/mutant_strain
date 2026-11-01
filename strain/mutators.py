@@ -1,11 +1,14 @@
-"""Mutant generation for the `lexer` engine."""
+"""Mutant generation: an engine finds the operators, the replacement table turns each one into mutants."""
 
+import enum
 import fnmatch
 import hashlib
 from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass
 
+from . import cppcheck_engine, tree_sitter_engine
 from .lexer import Token, TokenKind, tokenize
+from .operator_sites import EngineError, OperatorSite
 
 REPLACEMENTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "<": ("ror", ("<=", ">=")),
@@ -41,6 +44,17 @@ NON_OPERAND_KEYWORDS = frozenset(
 TEMPLATE_ARGUMENT_TOKENS = frozenset({"::", ",", "*", "&", "<", ">", ">>", "...", "(", ")"})
 
 MUTATE_OFF = "mutate-off"
+
+
+class Engine(enum.StrEnum):
+    AUTO = "auto"
+    CPPCHECK = "cppcheck"
+    TREE_SITTER = "tree-sitter"
+    LEXER = "lexer"
+
+
+# What `auto` picks: the first engine that is installed, most precise first.
+ENGINE_PREFERENCE = (Engine.CPPCHECK, Engine.TREE_SITTER, Engine.LEXER)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,25 +128,62 @@ def _mutable_tokens(tokens: Sequence[Token]) -> Iterator[Token]:
         yield token
 
 
+def lexer_sites(source: str) -> list[OperatorSite]:
+    code = [token for token in tokenize(source) if token.kind is not TokenKind.COMMENT]
+    return [OperatorSite(token.text, token.line, token.column, token.offset) for token in _mutable_tokens(code)]
+
+
+PARSING_ENGINES = {Engine.CPPCHECK: cppcheck_engine, Engine.TREE_SITTER: tree_sitter_engine}
+
+
+def engine_is_available(engine: Engine) -> bool:
+    return engine not in PARSING_ENGINES or PARSING_ENGINES[engine].is_available()
+
+
+def resolve_engine(requested: Engine) -> Engine:
+    """The engine `requested` names, or the best installed one for `auto`; raises EngineError if it is missing."""
+    if requested is Engine.AUTO:
+        return next(engine for engine in ENGINE_PREFERENCE if engine_is_available(engine))
+    if not engine_is_available(requested):
+        raise EngineError(PARSING_ENGINES[requested].MISSING)
+    return requested
+
+
+def operator_sites(engine: Engine, source: str) -> list[OperatorSite]:
+    resolved = resolve_engine(engine)
+    if resolved is Engine.LEXER:
+        return lexer_sites(source)
+    return PARSING_ENGINES[resolved].operator_sites(source)
+
+
+def mutants_at(
+    file: str,
+    sites: Sequence[OperatorSite],
+    lines: Collection[int] | None = None,
+    max_per_line: int | None = None,
+) -> list[Mutant]:
+    mutants: list[Mutant] = []
+    per_line: dict[int, int] = {}
+    for site in sites:
+        if site.text not in REPLACEMENTS or (lines is not None and site.line not in lines):
+            continue
+        operator, replacements = REPLACEMENTS[site.text]
+        for replacement in replacements:
+            if max_per_line is not None and per_line.get(site.line, 0) >= max_per_line:
+                break
+            per_line[site.line] = per_line.get(site.line, 0) + 1
+            mutants.append(Mutant(file, site.line, site.column, site.offset, operator, site.text, replacement))
+    return mutants
+
+
 def generate_mutants(
     file: str,
     source: str,
     lines: Collection[int] | None = None,
     max_per_line: int | None = None,
+    engine: Engine = Engine.LEXER,
 ) -> list[Mutant]:
-    code = [token for token in tokenize(source) if token.kind is not TokenKind.COMMENT]
-    mutants: list[Mutant] = []
-    per_line: dict[int, int] = {}
-    for token in _mutable_tokens(code):
-        if lines is not None and token.line not in lines:
-            continue
-        operator, replacements = REPLACEMENTS[token.text]
-        for replacement in replacements:
-            if max_per_line is not None and per_line.get(token.line, 0) >= max_per_line:
-                break
-            per_line[token.line] = per_line.get(token.line, 0) + 1
-            mutants.append(Mutant(file, token.line, token.column, token.offset, operator, token.text, replacement))
-    return mutants
+    return mutants_at(file, operator_sites(engine, source), lines, max_per_line)
 
 
 def describe_mutant(mutant: Mutant) -> str:
