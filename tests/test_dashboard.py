@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import threading
 import unittest
 from unittest import mock
 
@@ -10,15 +11,20 @@ from strain.dashboard import (
     MAIN_SCREEN,
     Dashboard,
     LiveConsole,
+    RUN_VIEW,
+    SURVIVORS_VIEW,
     code_snippet,
     create_console,
     fit,
 )
+from strain.coverage import LineCoverage
 from strain.mutators import Mutant
-from strain.results import MutantState
+from strain.results import MutantResult, MutantState, SurvivorKind
 
 SOURCE = "int clamp(int a, int b)\n{\n    if (a < b)\n        return a;\n    return b;\n}\n"
 MUTANT = Mutant("src/clamp.cpp", 3, 11, SOURCE.index("<"), "ror", "<", "<=")
+SECOND_MUTANT = Mutant("src/clamp.cpp", 3, 11, SOURCE.index("<"), "ror", "<", ">=")
+LINE_COVERAGE = LineCoverage(count=12, branches=2, branches_taken=2)
 ESCAPE = re.compile(r"\033\[[0-9;?]*[A-Za-z]")
 
 
@@ -29,6 +35,18 @@ class TerminalBuffer(io.StringIO):
 
 def terminal(columns: int, lines: int):
     return lambda: os.terminal_size((columns, lines))
+
+
+def no_keys(on_key):
+    return None
+
+
+class FakeKeys:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def plain(text: str) -> str:
@@ -129,6 +147,104 @@ class DashboardTest(unittest.TestCase):
                 self.assertTrue(all(len(line) == columns for line in frame))
 
 
+def survived(mutant: Mutant, test: str = "sample_tests") -> MutantResult:
+    return MutantResult(mutant, test, MutantState.SURVIVED, SurvivorKind.NOT_DETECTED, "clamp(int, int)")
+
+
+def killed(mutant: Mutant, test: str = "other_tests") -> MutantResult:
+    return MutantResult(mutant, test, MutantState.KILLED, None, "clamp(int, int)")
+
+
+class SurvivorBrowserTest(unittest.TestCase):
+    def make_dashboard(self) -> Dashboard:
+        dashboard = Dashboard(color=False, interactive=True)
+        dashboard.set_test("sample_tests", 1, 2)
+        dashboard.set_plan(["first", "second"])
+        return dashboard
+
+    def test_findings_panel_reports_survivors_while_the_run_goes_on(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        text = "\n".join(dashboard.render(120, 40))
+        self.assertIn("Findings", text)
+        self.assertIn("clamp() is pseudo-tested", text)
+        self.assertIn("src/clamp.cpp:3 `<` → `<=` survived (not_detected)", text)
+
+    def test_survivors_view_shows_the_selected_survivor_with_its_context(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.press("tab")
+        self.assertEqual(dashboard.view, SURVIVORS_VIEW)
+        text = "\n".join(dashboard.render(120, 40))
+        self.assertIn("Survivors (1)", text)
+        self.assertRegex(text, r"▶ src/clamp.cpp:3:11 \[ror\] `<` → `<=`")
+        self.assertIn(f"id {MUTANT.id}", text)
+        self.assertIn("function   clamp(int, int)", text)
+        self.assertIn("line 3 executed 12 times by sample_tests; 2/2 branches taken", text)
+        self.assertIn("survived   not_detected under sample_tests", text)
+        self.assertIn("add a test where `<` and `<=` give different results", text)
+        self.assertIn("+ 3 │     if (a <= b)", text)
+
+    def test_arrow_keys_move_the_selection_and_stay_in_range(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.record_result(survived(SECOND_MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.press("tab")
+        for key in ("down", "down", "down"):
+            dashboard.press(key)
+        text = "\n".join(dashboard.render(120, 40))
+        self.assertRegex(text, r"▶ src/clamp.cpp:3:11 \[ror\] `<` → `>=`")
+        self.assertIn(f"id {SECOND_MUTANT.id}", text)
+        for key in ("up", "up", "up"):
+            dashboard.press(key)
+        self.assertIn(f"id {MUTANT.id}", "\n".join(dashboard.render(120, 40)))
+
+    def test_execution_counts_add_up_over_every_test_that_ran_the_line(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.record_result(survived(MUTANT, "other_tests"), SOURCE, LineCoverage(3, 2, 1))
+        dashboard.press("tab")
+        text = "\n".join(dashboard.render(120, 40))
+        self.assertIn("line 3 executed 15 times: sample_tests 12, other_tests 3; 2/2 branches taken", text)
+
+    def test_a_mutant_killed_by_a_later_test_leaves_the_survivors(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.record_result(killed(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.press("tab")
+        text = "\n".join(dashboard.render(120, 40))
+        self.assertIn("Survivors (0)", text)
+        self.assertIn("no surviving mutants", text)
+
+    def test_tab_returns_to_the_run_view(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.press("tab")
+        dashboard.press("tab")
+        self.assertEqual(dashboard.view, RUN_VIEW)
+
+    def test_finishing_the_run_opens_the_survivors_and_tells_how_to_quit(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.finish_run()
+        frame = dashboard.render(120, 40)
+        self.assertEqual(dashboard.view, SURVIVORS_VIEW)
+        self.assertIn("q quit", frame[0])
+
+    def test_key_hints_are_only_shown_when_keys_are_read(self) -> None:
+        self.assertNotIn("tab", Dashboard(color=False).render(120, 40)[0])
+        self.assertIn("tab survivors", self.make_dashboard().render(120, 40)[0])
+
+    def test_survivors_view_fits_tiny_terminals(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.press("tab")
+        for columns, lines in ((10, 3), (1, 1), (80, 8)):
+            with self.subTest(size=(columns, lines)):
+                frame = dashboard.render(columns, lines)
+                self.assertEqual(len(frame), lines)
+                self.assertTrue(all(len(line) == columns for line in frame))
+
+
 class LiveConsoleTest(unittest.TestCase):
     def setUp(self) -> None:
         environment = mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=True)
@@ -148,7 +264,7 @@ class LiveConsoleTest(unittest.TestCase):
     def test_draws_on_the_alternate_screen_and_replays_the_transcript_when_finished(self) -> None:
         out = TerminalBuffer()
         err = io.StringIO()
-        console = LiveConsole(out, err, terminal(60, 20))
+        console = LiveConsole(out, err, terminal(60, 20), no_keys)
         console.heading("Preparing")
         console.plan([MUTANT])
         console.mutant_started(0, SOURCE, MUTANT)
@@ -164,6 +280,27 @@ class LiveConsoleTest(unittest.TestCase):
         self.assertEqual(out.getvalue().count(MAIN_SCREEN), 1)
         self.assertEqual(transcript, "\n▸ Preparing\n")
         self.assertEqual(err.getvalue(), "strain: warning: test t fails without mutation\n")
+
+    def test_run_finished_keeps_the_browser_open_until_q_is_pressed(self) -> None:
+        keys = FakeKeys()
+        console = LiveConsole(TerminalBuffer(), io.StringIO(), terminal(60, 20), lambda on_key: keys)
+        console.mutant_evaluated(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        waiter = threading.Thread(target=console.run_finished)
+        waiter.start()
+        console.key_pressed("tab")
+        waiter.join(0.2)
+        self.assertTrue(waiter.is_alive())
+        self.assertIn("Survivors (1)", console.out.getvalue())
+        console.key_pressed("q")
+        waiter.join(2)
+        self.assertFalse(waiter.is_alive())
+        console.finish()
+        self.assertTrue(keys.closed)
+
+    def test_run_finished_returns_at_once_without_a_keyboard(self) -> None:
+        console = LiveConsole(TerminalBuffer(), io.StringIO(), terminal(60, 20), no_keys)
+        console.run_finished()
+        console.finish()
 
 
 if __name__ == "__main__":

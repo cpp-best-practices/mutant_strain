@@ -51,7 +51,7 @@ def compiler_warning(entry: CombinedResult, source_root: Path) -> str:
     )
 
 
-def _hint(entry: CombinedResult) -> str:
+def hint(entry: CombinedResult) -> str:
     if entry.survivor is SurvivorKind.NOT_REACHED:
         return NOT_REACHED_HINT
     if entry.mutant.operator == "aor":
@@ -85,7 +85,7 @@ def action_items(combined: Sequence[CombinedResult], limit: int | None) -> list[
         *(f"{_short_function_name(function)} is pseudo-tested: nothing checks its result"
           for function in _pseudo_tested_functions(scored)),
         *(f"test {test} kills nothing: its assertions never fail on a mutant" for test in _tests_that_kill_nothing(scored)),
-        *(f"{entry.mutant.file}:{entry.mutant.line} {_change(entry)} survived{_survivor_label(entry)}: {_hint(entry)}"
+        *(f"{entry.mutant.file}:{entry.mutant.line} {_change(entry)} survived{_survivor_label(entry)}: {hint(entry)}"
           for entry in scored if entry.state is MutantState.SURVIVED),
     ]
     return items if limit is None else items[:limit]

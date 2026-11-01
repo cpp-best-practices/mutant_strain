@@ -340,6 +340,9 @@ class Runner:
             function = entry.source.coverage.function_at(entry.mutant.line)
             results.append(MutantResult(entry.mutant, test, outcome.state, outcome.survivor, function))
             self.record(results[-1], events)
+            self.console.mutant_evaluated(
+                results[-1], entry.source.text, entry.source.coverage.lines.get(entry.mutant.line)
+            )
             self.show_mutant(progress, entry.mutant, outcome.state, outcome.detail)
             self.console.mutant_finished(number - 1, outcome.state)
         self.rebuild_if_mutated()
@@ -466,6 +469,7 @@ class Runner:
         self.show_action_items(combined)
         self.show_summary(combined, score, report_path)
         self.console.line(f"\n{self.console.paint(f'finished in {time.monotonic() - start:.1f}s', DIM)}")
+        self.console.run_finished()
         threshold = self.options.threshold
         return 1 if threshold is not None and score is not None and score * 100 < threshold else 0
 

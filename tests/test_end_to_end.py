@@ -8,6 +8,9 @@ import unittest
 from pathlib import Path
 
 from strain.cli import main
+from strain.console import Console
+from strain.coverage import LineCoverage
+from strain.results import MutantResult, MutantState
 from strain.runner import Runner, RunOptions
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_project"
@@ -35,6 +38,19 @@ def configure_project(
         cwd=root,
     )
     run_checked("cmake", "--build", build_dir, cwd=root)
+
+
+class RecordingConsole(Console):
+    def __init__(self) -> None:
+        super().__init__(io.StringIO(), io.StringIO())
+        self.evaluated: list[tuple[MutantResult, str, LineCoverage | None]] = []
+        self.finished_runs = 0
+
+    def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
+        self.evaluated.append((result, source, line))
+
+    def run_finished(self) -> None:
+        self.finished_runs += 1
 
 
 def run_strain(*argv: str) -> tuple[int, str, str]:
@@ -172,6 +188,24 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(runner.target_for("sample_tests"), "sample_tests")
         self.assertEqual(runner.target_for("other_tests"), "other_tests")
         self.assertIsNone(runner.target_for("unknown_test"))
+
+    def test_survivors_reach_the_console_with_their_source_and_line_coverage(self) -> None:
+        configure_project(self.root, self.build_dir)
+        runner = Runner(
+            RunOptions(build_dir=self.build_dir, report_dir=self.report_dir, include="^sample_tests$"),
+            io.StringIO(), io.StringIO(),
+        )
+        console = RecordingConsole()
+        runner.console = console
+
+        runner.run()
+
+        survivors = [(result, line) for result, _, line in console.evaluated if result.state is MutantState.SURVIVED]
+        self.assertTrue(survivors)
+        self.assertTrue(all(source.startswith('#include "sample.hpp"') for _, source, _ in console.evaluated))
+        clamp = next(line for result, line in survivors if result.mutant.line == 7)
+        self.assertEqual(clamp.count, 1)
+        self.assertEqual(console.finished_runs, 1)
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)
