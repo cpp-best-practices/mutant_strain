@@ -3,7 +3,7 @@
 import json
 import shlex
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -19,7 +19,7 @@ from .build import (
     target_artifacts,
 )
 from .config import CONFIG_FILE, Config, load_config
-from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, plural
+from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, plural, score_style
 from .coverage import FileCoverage, GcovCoverage
 from .dashboard import create_console
 from .journal import Journal
@@ -34,7 +34,19 @@ from .mutators import (
     suppressed_lines,
 )
 from .operator_sites import EngineError, OperatorSite
-from .report import EventLog, action_items, compiler_warning, mutation_testing_elements, summary_line
+from .html_report import html_report
+from .report import (
+    EventLog,
+    FileScore,
+    action_items,
+    compiler_warning,
+    file_scores,
+    format_score,
+    markdown_summary,
+    mutation_testing_elements,
+    source_excerpt,
+    summary_line,
+)
 from .results import (
     DETECTED_STATES,
     CombinedResult,
@@ -413,21 +425,48 @@ class Runner:
             f"  {console.paint(f'{detail}  id {mutant.id}', DIM)}"
         )
 
-    def write_report(self, combined: Sequence[CombinedResult]) -> Path:
-        sources = {
+    def read_sources(self, combined: Sequence[CombinedResult]) -> dict[str, str]:
+        return {
             entry.mutant.file: (self.source_dir / entry.mutant.file).read_bytes().decode(SOURCE_ENCODING, SOURCE_ERRORS)
             for entry in combined
         }
-        report_path = self.options.report_dir / "report.json"
-        report_path.write_text(json.dumps(mutation_testing_elements(combined, sources), indent=2, ensure_ascii=False))
-        return report_path
 
-    def show_survivors(self, combined: Sequence[CombinedResult]) -> None:
+    def write_reports(self, combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> None:
+        report_dir = self.options.report_dir
+        (report_dir / "report.json").write_text(
+            json.dumps(mutation_testing_elements(combined, sources), indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        (report_dir / "index.html").write_text(html_report(combined, sources), encoding="utf-8")
+        (report_dir / "summary.md").write_text(markdown_summary(combined, self.options.threshold), encoding="utf-8")
+
+    def show_survivors(self, combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> None:
         survivors = [entry for entry in combined if entry.state is MutantState.SURVIVED]
         if survivors:
             self.console.heading(f"Survivors ({len(survivors)})")
             for entry in survivors:
-                self.console.line(compiler_warning(entry, self.source_dir))
+                self.console.line(self.console.paint(compiler_warning(entry, self.source_dir), BOLD))
+                for line in source_excerpt(entry.mutant, sources[entry.mutant.file]):
+                    self.console.line(line)
+
+    def show_files(self, combined: Sequence[CombinedResult]) -> None:
+        rows = file_scores(combined)
+        if not rows:
+            return
+        console = self.console
+        console.heading("Files")
+        width = max(len(row.file) for row in rows)
+        for row in rows:
+            console.line(self.file_line(row, width))
+
+    def file_line(self, row: FileScore, width: int) -> str:
+        console = self.console
+        percent = None if row.score is None else row.score * 100
+        survived_style = STATE_STYLES[MutantState.SURVIVED] if row.survived else DIM
+        return (
+            f"  {row.file:<{width}}  {console.paint(f'{format_score(row.score):>6}', score_style(percent))}"
+            f"   {plural(row.mutants, 'mutant')}  {row.detected} detected"
+            f"  {console.paint(f'{row.survived} survived', survived_style)}"
+        )
 
     def show_action_items(self, combined: Sequence[CombinedResult]) -> None:
         items = action_items(combined, limit=None if self.options.show_all else DEFAULT_ACTION_ITEMS)
@@ -436,7 +475,7 @@ class Runner:
             for number, item in enumerate(items, start=1):
                 self.console.line(f"  {number}. {item}")
 
-    def show_summary(self, combined: Sequence[CombinedResult], score: float | None, report_path: Path) -> None:
+    def show_summary(self, combined: Sequence[CombinedResult], score: float | None) -> None:
         console = self.console
         console.heading("Summary")
         states = [entry.state for entry in combined]
@@ -448,8 +487,11 @@ class Runner:
         console.field("mutants", f"{len(combined)}   {'  '.join(counts)}" if counts else "none", 8)
         percent = None if score is None else score * 100
         console.line(f"  {console.paint('mutation score', BOLD)} {console.score(percent)}{self.threshold_note(percent)}")
-        console.field("report", str(report_path), 8)
-        console.field("events", str(self.options.report_dir / "events.jsonl"), 8)
+        report_dir = self.options.report_dir
+        console.field("html", str(report_dir / "index.html"), 8)
+        console.field("markdown", str(report_dir / "summary.md"), 8)
+        console.field("report", str(report_dir / "report.json"), 8)
+        console.field("events", str(report_dir / "events.jsonl"), 8)
 
     def threshold_note(self, percent: float | None) -> str:
         threshold = self.options.threshold
@@ -494,11 +536,13 @@ class Runner:
             combined = combine(self.run_tests(tests, events))
             self.require_mutants(combined)
             score = mutation_score(entry.state for entry in combined)
-            report_path = self.write_report(combined)
+            sources = self.read_sources(combined)
+            self.write_reports(combined, sources)
             events.emit("finished", score=score)
-        self.show_survivors(combined)
+        self.show_survivors(combined, sources)
         self.show_action_items(combined)
-        self.show_summary(combined, score, report_path)
+        self.show_files(combined)
+        self.show_summary(combined, score)
         self.console.line(f"\n{self.console.paint(f'finished in {time.monotonic() - start:.1f}s', DIM)}")
         self.console.run_finished()
         threshold = self.options.threshold
