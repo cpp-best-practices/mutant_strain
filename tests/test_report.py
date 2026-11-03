@@ -33,8 +33,10 @@ class CombineTest(unittest.TestCase):
                 result(PLUS, "b", MutantState.SURVIVED, SurvivorKind.NOT_DETECTED),
             ]
         )
-        self.assertEqual([(entry.mutant, entry.state) for entry in combined],
-                         [(LESS, MutantState.KILLED), (PLUS, MutantState.SURVIVED)])
+        self.assertEqual(
+            [(entry.mutant, entry.state) for entry in combined],
+            [(LESS, MutantState.KILLED), (PLUS, MutantState.SURVIVED)],
+        )
         self.assertEqual(combined[0].killed_by, ("b",))
         self.assertEqual(combined[0].covered_by, ("a", "b"))
         self.assertIs(combined[1].survivor, SurvivorKind.NOT_DETECTED)

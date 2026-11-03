@@ -33,9 +33,34 @@ class RunOptionsTest(unittest.TestCase):
 
     def test_every_option(self) -> None:
         options = parse(
-            "--build-dir", "build-strain", "-R", "parser", "-E", "slow", "--since", "main", "--strategy", "per-test",
-            "--skip-killed", "--engine", "lexer", "--coverage", "gcov", "--ui", "json", "--safety-nets", "warn",
-            "--threshold", "75.5", "--strict", "--max-per-line", "3", "--resume", "--all", "--report-dir", "out",
+            "--build-dir",
+            "build-strain",
+            "-R",
+            "parser",
+            "-E",
+            "slow",
+            "--since",
+            "main",
+            "--strategy",
+            "per-test",
+            "--skip-killed",
+            "--engine",
+            "lexer",
+            "--coverage",
+            "gcov",
+            "--ui",
+            "json",
+            "--safety-nets",
+            "warn",
+            "--threshold",
+            "75.5",
+            "--strict",
+            "--max-per-line",
+            "3",
+            "--resume",
+            "--all",
+            "--report-dir",
+            "out",
         )
         self.assertEqual(options.build_dir, Path("build-strain"))
         self.assertEqual((options.include, options.exclude, options.since), ("parser", "slow", "main"))

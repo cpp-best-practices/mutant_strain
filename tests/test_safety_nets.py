@@ -49,8 +49,15 @@ class MissingSafetyNetsTest(unittest.TestCase):
         )
 
     def test_libcxx_hardening_counts_as_stdlib_assertions(self) -> None:
-        flags = ("clang++", "--coverage", "-fsanitize=address,undefined",
-                 "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST", "-ftrivial-auto-var-init=pattern", "-c", "a.cpp")
+        flags = (
+            "clang++",
+            "--coverage",
+            "-fsanitize=address,undefined",
+            "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
+            "-ftrivial-auto-var-init=pattern",
+            "-c",
+            "a.cpp",
+        )
         self.assertEqual(missing_safety_nets([command("a.cpp", flags)]), {})
 
     def failing_nets(self, *extra: str) -> set[SafetyNet]:
@@ -78,10 +85,10 @@ class MissingSafetyNetsTest(unittest.TestCase):
 
     def test_translation_unit_without_coverage_is_partial_coverage(self) -> None:
         flags = tuple(flag for flag in FULL_FLAGS if flag != "--coverage")
-        self.assertEqual(missing_safety_nets([command("a.cpp", flags)]), {SafetyNet.PARTIAL_COVERAGE: [Path("/s/a.cpp")]})
         self.assertEqual(
-            missing_safety_nets([command("a.cpp", (*flags, "-fprofile-arcs", "-ftest-coverage"))]), {}
+            missing_safety_nets([command("a.cpp", flags)]), {SafetyNet.PARTIAL_COVERAGE: [Path("/s/a.cpp")]}
         )
+        self.assertEqual(missing_safety_nets([command("a.cpp", (*flags, "-fprofile-arcs", "-ftest-coverage"))]), {})
 
 
 class BuildWideProblemsTest(unittest.TestCase):
@@ -105,7 +112,9 @@ class BuildWideProblemsTest(unittest.TestCase):
         )
         problems = build_wide_problems({}, [command("a.cpp", FULL_FLAGS), unity])
         self.assertEqual(set(problems), {SafetyNet.UNITY_BUILD})
-        self.assertIn("1 unity source(s), e.g. /b/CMakeFiles/lib.dir/Unity/unity_0_cxx.cxx", problems[SafetyNet.UNITY_BUILD])
+        self.assertIn(
+            "1 unity source(s), e.g. /b/CMakeFiles/lib.dir/Unity/unity_0_cxx.cxx", problems[SafetyNet.UNITY_BUILD]
+        )
 
 
 class DescribeMissingTest(unittest.TestCase):

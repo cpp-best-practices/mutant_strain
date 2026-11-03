@@ -288,7 +288,9 @@ class Dashboard:
         if not self.queue:
             return [self.paint("  no mutants planned yet", DIM)]
         start = window_start(self.current or 0, len(self.queue), rows)
-        lines = [self.queue_line(index, self.queue[index]) for index in range(start, min(len(self.queue), start + rows))]
+        lines = [
+            self.queue_line(index, self.queue[index]) for index in range(start, min(len(self.queue), start + rows))
+        ]
         if rows < QUEUE_MARKER_ROWS:
             return lines
         hidden_after = len(self.queue) - (start + rows)
@@ -361,7 +363,10 @@ class Dashboard:
         build_title = f"Build log: {self.build_command}" if self.build_command else "Build log"
         return [
             *self.panel(
-                f"Mutant: {self.mutant_title}", rows.snippet, lambda count: self.snippet_lines(self.snippet)[:count], width
+                f"Mutant: {self.mutant_title}",
+                rows.snippet,
+                lambda count: self.snippet_lines(self.snippet)[:count],
+                width,
             ),
             *self.panel("Mutants", rows.queue, self.queue_lines, width),
             *self.panel("Findings", rows.findings, self.findings_lines, width),

@@ -90,7 +90,9 @@ def _combine_one(results: Sequence[MutantResult]) -> CombinedResult:
     survivor_kinds = {result.survivor for result in results if result.state is MutantState.SURVIVED}
     survivor = None
     if state is MutantState.SURVIVED and survivor_kinds - {None}:
-        survivor = SurvivorKind.NOT_DETECTED if SurvivorKind.NOT_DETECTED in survivor_kinds else SurvivorKind.NOT_REACHED
+        survivor = (
+            SurvivorKind.NOT_DETECTED if SurvivorKind.NOT_DETECTED in survivor_kinds else SurvivorKind.NOT_REACHED
+        )
     return CombinedResult(
         mutant=results[0].mutant,
         state=state,

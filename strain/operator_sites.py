@@ -38,7 +38,6 @@ class LineIndex:
             return None
         return OperatorSite(text, line, column, offset)
 
-
     def site_at_byte_column(self, text: str, line: int, byte_column: int) -> OperatorSite | None:
         """Like `site`, for parsers that count the column in UTF-8 bytes rather than characters."""
         if not 1 <= line <= len(self.encoded_lines):

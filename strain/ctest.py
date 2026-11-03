@@ -46,7 +46,12 @@ def executables_by_test(build_dir: Path) -> dict[str, Path]:
 
 def run_test(build_dir: Path, name: str, timeout: float) -> RunResult:
     command = [
-        "ctest", "--verbose", "--timeout", str(math.ceil(timeout)), "-R", f"^{re.escape(name)}$",
+        "ctest",
+        "--verbose",
+        "--timeout",
+        str(math.ceil(timeout)),
+        "-R",
+        f"^{re.escape(name)}$",
     ]
     start = time.monotonic()
     try:

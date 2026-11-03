@@ -317,7 +317,9 @@ class Runner:
             run = ctest.run_test(self.build_dir, test, timeout)
         state = classify_run(run)
         survivor = survivor_kind(source.coverage, mutant.line) if state is MutantState.SURVIVED else None
-        return Outcome(state, survivor, f"{run.duration:.2f}s" if survivor is None else f"{run.duration:.2f}s, {survivor}")
+        return Outcome(
+            state, survivor, f"{run.duration:.2f}s" if survivor is None else f"{run.duration:.2f}s, {survivor}"
+        )
 
     def run_baseline(self, test: str, events: EventLog) -> float | None:
         self.coverage.reset()
@@ -401,9 +403,17 @@ class Runner:
         if result.state in DETECTED_STATES:
             self.killed.add(mutant.id)
         events.emit(
-            "mutant", test=result.test, id=mutant.id, file=mutant.file, line=mutant.line, column=mutant.column,
-            operator=mutant.operator, original=mutant.original, replacement=mutant.replacement,
-            state=result.state, survivor=result.survivor,
+            "mutant",
+            test=result.test,
+            id=mutant.id,
+            file=mutant.file,
+            line=mutant.line,
+            column=mutant.column,
+            operator=mutant.operator,
+            original=mutant.original,
+            replacement=mutant.replacement,
+            state=result.state,
+            survivor=result.survivor,
         )
 
     def show_mutant(self, progress: str, mutant: Mutant, state: str, detail: str) -> None:
@@ -447,7 +457,9 @@ class Runner:
         ]
         console.field("mutants", f"{len(combined)}   {'  '.join(counts)}" if counts else "none", 8)
         percent = None if score is None else score * 100
-        console.line(f"  {console.paint('mutation score', BOLD)} {console.score(percent)}{self.threshold_note(percent)}")
+        console.line(
+            f"  {console.paint('mutation score', BOLD)} {console.score(percent)}{self.threshold_note(percent)}"
+        )
         console.field("report", str(report_path), 8)
         console.field("events", str(self.options.report_dir / "events.jsonl"), 8)
 
@@ -487,8 +499,11 @@ class Runner:
         if not tests:
             raise StrainError("no tests selected")
         self.console.step(f"selected {plural(len(tests), 'test')}: {', '.join(tests)}")
-        with EventLog(self.options.report_dir / "events.jsonl", self.out if self.options.ui is UiMode.JSON else None,
-                      self.options.resume) as events:
+        with EventLog(
+            self.options.report_dir / "events.jsonl",
+            self.out if self.options.ui is UiMode.JSON else None,
+            self.options.resume,
+        ) as events:
             if self.options.resume:
                 self.console.step(f"resuming: {plural(len(events.previous_results()), 'earlier result')} reused")
             combined = combine(self.run_tests(tests, events))
