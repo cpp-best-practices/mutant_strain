@@ -2,7 +2,7 @@ import unittest
 from unittest import mock
 
 from strain import cppcheck_engine, tree_sitter_engine
-from strain.mutators import Engine, apply_mutant, generate_mutants, resolve_engine
+from strain.mutators import Engine, apply_mutant, fallback_engine, generate_mutants, resolve_engine
 from strain.operator_sites import EngineError, OperatorSite
 
 
@@ -200,6 +200,16 @@ class ResolveEngineTest(unittest.TestCase):
             with self.subTest(engine=engine), self.assertRaises(EngineError):
                 resolve_engine(engine)
         self.assertIs(resolve_engine(Engine.LEXER), Engine.LEXER)
+
+    def test_fallback_is_the_next_installed_engine(self) -> None:
+        self.available(cppcheck=True, tree_sitter=False)
+        self.assertIs(fallback_engine(Engine.CPPCHECK), Engine.LEXER)
+        self.assertIsNone(fallback_engine(Engine.LEXER))
+
+    def test_fallback_prefers_tree_sitter_to_the_lexer(self) -> None:
+        self.available(cppcheck=True, tree_sitter=True)
+        self.assertIs(fallback_engine(Engine.CPPCHECK), Engine.TREE_SITTER)
+        self.assertIs(fallback_engine(Engine.TREE_SITTER), Engine.LEXER)
 
 
 if __name__ == "__main__":

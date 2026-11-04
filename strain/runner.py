@@ -29,6 +29,7 @@ from .mutators import (
     Mutant,
     apply_mutant,
     describe_mutant,
+    fallback_engine,
     mutants_at,
     operator_sites,
     resolve_engine,
@@ -282,11 +283,19 @@ class Runner:
     def sites_for(self, source: SourceFile) -> list[OperatorSite]:
         """The operators the engine finds in `source`, found once per run since every test restores the sources."""
         if source.relative not in self.sites:
-            try:
-                self.sites[source.relative] = operator_sites(self.engine, source.text)
-            except EngineError as error:
-                raise StrainError(f"{source.relative}: {error}") from error
+            self.sites[source.relative] = self.find_sites(source)
         return self.sites[source.relative]
+
+    def find_sites(self, source: SourceFile) -> list[OperatorSite]:
+        """The engine's sites; under `--engine auto`, a source it cannot parse goes to the next installed engine."""
+        try:
+            return operator_sites(self.engine, source.text)
+        except EngineError as error:
+            fallback = fallback_engine(self.engine) if self.options.engine is Engine.AUTO else None
+            if fallback is None:
+                raise StrainError(f"{source.relative}: {error}, or pass --engine lexer") from error
+            self.console.warn(f"{source.relative}: {error}; using the {fallback} engine for this file")
+            return operator_sites(fallback, source.text)
 
     def mutants_for(self, source: SourceFile) -> list[Mutant]:
         lines = source.coverage.executed_lines()

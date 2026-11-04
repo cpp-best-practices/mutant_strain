@@ -10,6 +10,7 @@ from pathlib import Path
 from strain import cppcheck_engine, tree_sitter_engine
 from strain.cli import main
 from strain.console import Console
+from strain.mutators import Engine, fallback_engine
 from strain.coverage import LineCoverage
 from strain.results import MutantResult, MutantState
 from strain.runner import Runner, RunOptions
@@ -60,6 +61,17 @@ class RecordingConsole(Console):
         self.finished_runs += 1
 
 
+PARSED_STATES = [
+    (3, "aor", "-", "killed"),
+    (7, "ror", "<=", "survived"),
+    (7, "ror", ">=", "survived"),
+    (11, "lcr", "||", "survived"),
+    (13, "aor", "/", "killed_by_sanitizer"),
+    (15, "aor", "-", "ignored"),
+]
+# A macro from a header that cppcheck, which analyzes each source alone, cannot expand and so cannot parse around.
+UNKNOWN_MACRO_DEFINITION = "#define SAMPLE_LOG(value)\n"
+UNKNOWN_MACRO_USE = "\nint logged(int value) { SAMPLE_LOG(value) return value; }\n"
 SINGLE_TEST_STATES = [
     (3, "aor", "-", "killed"),
     (7, "ror", "<=", "survived"),
@@ -159,17 +171,7 @@ class EndToEndTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0, stdout)
         self.assertIn(f"✓ mutation engine: {engine}", stdout)
-        self.assertEqual(
-            self.mutant_states(),
-            [
-                (3, "aor", "-", "killed"),
-                (7, "ror", "<=", "survived"),
-                (7, "ror", ">=", "survived"),
-                (11, "lcr", "||", "survived"),
-                (13, "aor", "/", "killed_by_sanitizer"),
-                (15, "aor", "-", "ignored"),
-            ],
-        )
+        self.assertEqual(self.mutant_states(), PARSED_STATES)
 
     @unittest.skipUnless(tree_sitter_engine.is_available(), "needs the tree-sitter and tree-sitter-cpp packages")
     def test_tree_sitter_engine(self) -> None:
@@ -198,6 +200,50 @@ class EndToEndTest(unittest.TestCase):
 
     def test_lexer_engine_does_not_mutate_test_code(self) -> None:
         self.assert_test_code_is_not_mutated("lexer")
+
+    def use_a_macro_cppcheck_cannot_expand(self) -> None:
+        header = self.root / "include" / "sample.hpp"
+        header.write_text(
+            header.read_text().replace("#define SAMPLE_HPP\n", "#define SAMPLE_HPP\n" + UNKNOWN_MACRO_DEFINITION)
+        )
+        source = self.root / "src" / "sample.cpp"
+        source.write_text(source.read_text() + UNKNOWN_MACRO_USE)
+        configure_project(self.root, self.build_dir)
+
+    def run_sample_tests(self, engine: str) -> tuple[int, str, str]:
+        return run_strain(
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^sample_tests$",
+            "--engine",
+            engine,
+        )
+
+    @unittest.skipUnless(cppcheck_engine.is_available(), "needs cppcheck on PATH")
+    def test_auto_engine_falls_back_for_a_source_cppcheck_cannot_parse(self) -> None:
+        self.use_a_macro_cppcheck_cannot_expand()
+        fallback = fallback_engine(Engine.CPPCHECK)
+
+        exit_code, stdout, stderr = self.run_sample_tests("auto")
+
+        self.assertEqual(exit_code, 0, stdout + stderr)
+        self.assertIn("✓ mutation engine: cppcheck", stdout)
+        self.assertIn("src/sample.cpp: cppcheck cannot parse it, line 22:", stderr)
+        self.assertIn(f"[unknownMacro]; using the {fallback} engine for this file", stderr)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES if fallback is Engine.LEXER else PARSED_STATES)
+
+    @unittest.skipUnless(cppcheck_engine.is_available(), "needs cppcheck on PATH")
+    def test_cppcheck_engine_stops_at_a_source_it_cannot_parse(self) -> None:
+        self.use_a_macro_cppcheck_cannot_expand()
+
+        exit_code, stdout, stderr = self.run_sample_tests("cppcheck")
+
+        self.assertEqual(exit_code, 2, stdout + stderr)
+        self.assertIn("src/sample.cpp: cppcheck cannot parse it, line 22:", stderr)
+        self.assertIn("[unknownMacro], or pass --engine lexer", stderr)
 
     def test_per_test_strategy_combines_results(self) -> None:
         configure_project(self.root, self.build_dir)

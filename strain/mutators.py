@@ -177,6 +177,12 @@ def resolve_engine(requested: Engine) -> Engine:
     return requested
 
 
+def fallback_engine(engine: Engine) -> Engine | None:
+    """The best installed engine less precise than `engine`, for the sources `engine` cannot parse."""
+    later = ENGINE_PREFERENCE[ENGINE_PREFERENCE.index(engine) + 1 :]
+    return next((candidate for candidate in later if engine_is_available(candidate)), None)
+
+
 def operator_sites(engine: Engine, source: str) -> list[OperatorSite]:
     resolved = resolve_engine(engine)
     if resolved is Engine.LEXER:
