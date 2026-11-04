@@ -176,6 +176,26 @@ class EndToEndTest(unittest.TestCase):
     def test_cppcheck_engine(self) -> None:
         self.assert_parsing_engine_skips_declarators("cppcheck")
 
+    def assert_test_code_is_not_mutated(self, engine: str) -> None:
+        (self.root / "strain.toml").unlink()
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = run_strain(
+            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "--engine", engine
+        )
+
+        self.assertEqual(exit_code, 0, stdout)
+        report = json.loads((self.report_dir / "report.json").read_text())
+        self.assertEqual(list(report["files"]), ["src/sample.cpp"])
+        self.assertNotIn("tests/sample_tests.cpp", stdout)
+
+    @unittest.skipUnless(cppcheck_engine.is_available(), "needs cppcheck on PATH")
+    def test_cppcheck_engine_does_not_mutate_test_code(self) -> None:
+        self.assert_test_code_is_not_mutated("cppcheck")
+
+    def test_lexer_engine_does_not_mutate_test_code(self) -> None:
+        self.assert_test_code_is_not_mutated("lexer")
+
     def test_per_test_strategy_combines_results(self) -> None:
         configure_project(self.root, self.build_dir)
 
