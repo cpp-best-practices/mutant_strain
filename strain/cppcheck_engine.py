@@ -80,7 +80,7 @@ def sites_from_dump(dump: str, source: str) -> list[OperatorSite]:
     """The operator sites of every preprocessor configuration cppcheck analyzed, each site once."""
     index = LineIndex(source)
     try:
-        root = ElementTree.fromstring(dump)
+        root = ElementTree.fromstring(dump)  # noqa: S314 - cppcheck wrote the dump; expat ignores external entities
     except ElementTree.ParseError as error:
         raise EngineError(f"cannot read the cppcheck dump: {error}") from error
     main_file = _main_file_name(root)

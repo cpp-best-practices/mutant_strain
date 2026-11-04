@@ -39,7 +39,7 @@ class Journal:
     def _record(self, path: Path, original: bytes) -> Path:
         self.directory.mkdir(parents=True, exist_ok=True)
         resolved = str(path.resolve())
-        entry = self.directory / f"{hashlib.sha1(resolved.encode()).hexdigest()}.json"
+        entry = self.directory / f"{hashlib.sha1(resolved.encode(), usedforsecurity=False).hexdigest()}.json"
         temporary = entry.with_suffix(".tmp")
         temporary.write_text(json.dumps({"path": resolved, "original": base64.b64encode(original).decode()}))
         os.replace(temporary, entry)

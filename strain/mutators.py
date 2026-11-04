@@ -102,7 +102,7 @@ class Mutant:
     @property
     def id(self) -> str:
         key = f"{self.file}:{self.line}:{self.column}:{self.original}:{self.replacement}"
-        return hashlib.sha1(key.encode()).hexdigest()[:8]
+        return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:8]
 
 
 def _is_operand_end(token: Token) -> bool:
