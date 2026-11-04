@@ -1,0 +1,7 @@
+# What CI installs besides strain, locked with hashes in requirements-ci.txt by
+#   pip-compile --generate-hashes --allow-unsafe --strip-extras requirements-ci.in
+coverage>=7.10
+lizard
+pytest
+ruff>=0.15
+setuptools>=64

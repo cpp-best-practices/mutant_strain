@@ -25,7 +25,9 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install strain
-        run: python -m pip install -e . pytest
+        run: |
+          python -m pip install --require-hashes -r requirements-ci.txt
+          python -m pip install --no-deps --no-build-isolation -e .
 
       - name: Test
         run: python -W error -m pytest
@@ -41,7 +43,9 @@ jobs:
           python-version: "3.14"
 
       - name: Install strain
-        run: python -m pip install -e . pytest "coverage>=7.10"
+        run: |
+          python -m pip install --require-hashes -r requirements-ci.txt
+          python -m pip install --no-deps --no-build-isolation -e .
 
       - name: Test with branch coverage
         run: python -W error -m coverage run --branch -m pytest
@@ -62,7 +66,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install ruff
-        run: python -m pip install "ruff>=0.15"
+        run: python -m pip install --require-hashes -r requirements-ci.txt
 
       - name: Check formatting
         run: ruff format --check --diff .
@@ -78,7 +82,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install ruff
-        run: python -m pip install "ruff>=0.15"
+        run: python -m pip install --require-hashes -r requirements-ci.txt
 
       - name: Lint, including the bandit security lints
         run: ruff check --output-format=github .
@@ -94,7 +98,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install lizard
-        run: python -m pip install lizard
+        run: python -m pip install --require-hashes -r requirements-ci.txt
 
       - name: Limit function length
         run: lizard --length 30 --warnings_only strain tests
