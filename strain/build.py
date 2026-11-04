@@ -112,7 +112,18 @@ def _file_api_directory(build_dir: Path) -> Path:
     return build_dir / ".cmake" / "api" / "v1"
 
 
-def _read_codemodel_artifacts(reply_dir: Path) -> dict[Path, str]:
+@dataclass(frozen=True, slots=True)
+class Target:
+    name: str
+    sources: frozenset[Path]
+
+
+def _target_from_details(details: Mapping[str, Any], source_dir: Path) -> Target:
+    sources = frozenset((source_dir / source["path"]).resolve() for source in details.get("sources", []))
+    return Target(details["name"], sources)
+
+
+def _read_codemodel_artifacts(reply_dir: Path) -> dict[Path, Target]:
     indexes = sorted(reply_dir.glob("index-*.json"))
     if not indexes:
         return {}
@@ -122,17 +133,20 @@ def _read_codemodel_artifacts(reply_dir: Path) -> dict[Path, str]:
         return {}
     model = json.loads((reply_dir / codemodel["jsonFile"]).read_text())
     build_dir = Path(model["paths"]["build"])
-    artifacts: dict[Path, str] = {}
+    source_dir = Path(model["paths"]["source"])
+    artifacts: dict[Path, Target] = {}
     for configuration in model["configurations"]:
         for target in configuration["targets"]:
             details = json.loads((reply_dir / target["jsonFile"]).read_text())
             for artifact in details.get("artifacts", []):
-                artifacts[Path(os.path.normpath(build_dir / artifact["path"]))] = target["name"]
+                artifacts[Path(os.path.normpath(build_dir / artifact["path"]))] = _target_from_details(
+                    details, source_dir
+                )
     return artifacts
 
 
-def target_artifacts(build_dir: Path) -> dict[Path, str]:
-    """The files the build's targets produce, keyed by absolute path, from the CMake file API.
+def target_artifacts(build_dir: Path) -> dict[Path, Target]:
+    """The target that produces each of the build's files, keyed by absolute path, from the CMake file API.
 
     Writes a codemodel query and reconfigures the build folder so CMake answers it; empty if that fails.
     """

@@ -12,6 +12,7 @@ from . import ctest, git
 from .build import (
     CompilationDatabase,
     CompileCommand,
+    Target,
     build,
     build_command,
     read_cmake_cache,
@@ -142,7 +143,7 @@ class Runner:
         self.killed: set[str] = set()
         self.engine = Engine.LEXER
         self.sites: dict[str, list[OperatorSite]] = {}
-        self.test_targets: dict[str, str] = {}
+        self.test_targets: dict[str, Target] = {}
         self.build_is_mutated = False
         self.coverage_verified = False
 
@@ -200,7 +201,7 @@ class Runner:
         self.console.step(f"mutation engine: {engine}")
         return engine
 
-    def find_test_targets(self) -> dict[str, str]:
+    def find_test_targets(self) -> dict[str, Target]:
         artifacts = target_artifacts(self.build_dir)
         return {
             test: artifacts[executable]
@@ -210,7 +211,13 @@ class Runner:
 
     def target_for(self, test: str) -> str | None:
         """The CMake target that builds the program `test` runs; None rebuilds everything."""
-        return self.test_targets.get(test)
+        target = self.test_targets.get(test)
+        return None if target is None else target.name
+
+    def test_code(self, test: str) -> frozenset[Path]:
+        """The sources of the program `test` runs: they do the testing, so mutating them tests nothing."""
+        target = self.test_targets.get(test)
+        return frozenset() if target is None else target.sources
 
     def describe_config(self) -> str:
         if not (self.source_dir / CONFIG_FILE).is_file():
@@ -259,11 +266,11 @@ class Runner:
         if present:
             self.console.step(f"safety nets that hold for the whole build: {', '.join(present)}")
 
-    def source_files(self, coverage: dict[Path, FileCoverage]) -> list[SourceFile]:
+    def source_files(self, coverage: dict[Path, FileCoverage], test_code: frozenset[Path]) -> list[SourceFile]:
         files: list[SourceFile] = []
         for path, file_coverage in coverage.items():
             resolved = path.resolve()
-            if not self.is_project_source(resolved) or not resolved.is_file():
+            if not self.is_project_source(resolved) or resolved in test_code or not resolved.is_file():
                 continue
             relative = resolved.relative_to(self.source_dir).as_posix()
             if self.config.is_excluded(relative):
@@ -357,7 +364,7 @@ class Runner:
             return []
         coverage = self.coverage.collect()
         self.verify_coverage_data(test, coverage)
-        planned = self.plan_mutants(self.source_files(coverage))
+        planned = self.plan_mutants(self.source_files(coverage, self.test_code(test)))
         self.console.plan([entry.mutant for entry in planned])
         width = len(str(len(planned)))
         results: list[MutantResult] = []

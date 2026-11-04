@@ -130,8 +130,14 @@ class TargetBuildTest(unittest.TestCase):
 
     def test_artifacts_map_to_their_targets(self) -> None:
         artifacts = target_artifacts(self.build_dir)
-        self.assertEqual(artifacts.get(self.build_dir / "sample_tests"), "sample_tests")
-        self.assertEqual(artifacts.get(self.build_dir / "other_tests"), "other_tests")
+        self.assertEqual(artifacts[self.build_dir / "sample_tests"].name, "sample_tests")
+        self.assertEqual(artifacts[self.build_dir / "other_tests"].name, "other_tests")
+
+    def test_targets_list_their_own_sources(self) -> None:
+        artifacts = target_artifacts(self.build_dir)
+        self.assertEqual(
+            artifacts[self.build_dir / "sample_tests"].sources, {(FIXTURE / "tests" / "sample_tests.cpp").resolve()}
+        )
 
     def test_building_a_target_leaves_other_targets_alone(self) -> None:
         self.assertTrue(build(self.build_dir, "sample_tests"))
