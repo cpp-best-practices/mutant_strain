@@ -43,17 +43,12 @@ class EngineCases:
 
     def test_comments_strings_and_directives_are_not_mutated(self) -> None:
         source = (
-            "#define ADD(a, b) ((a) + (b))\n"
-            "#if VERSION > 1\n"
-            "#endif\n"
-            "const char *f() {\n"
-            "  return \"a < b\"; // x - y\n"
-            "}\n"
+            '#define ADD(a, b) ((a) + (b))\n#if VERSION > 1\n#endif\nconst char *f() {\n  return "a < b"; // x - y\n}\n'
         )
         self.assertEqual(self.summary(source), [])
 
     def test_locations_count_characters(self) -> None:
-        source = "int f(int a, int b) {\n\tauto s = \"é\"; return a == b;\n}\n"
+        source = 'int f(int a, int b) {\n\tauto s = "é"; return a == b;\n}\n'
         mutant = generate_mutants("f.cpp", source, engine=self.engine)[0]
         self.assertEqual((mutant.line, mutant.column, mutant.offset), (2, 25, source.index("==")))
         self.assertEqual(apply_mutant(source, mutant), source.replace("==", "!="))

@@ -29,12 +29,18 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--strategy", choices=["per-test"], default="per-test", help="mutation strategy")
     parser.add_argument("--skip-killed", action="store_true", help="skip mutants an earlier test already killed")
     parser.add_argument(
-        "--engine", type=Engine, choices=list(Engine), default=Engine.AUTO,
+        "--engine",
+        type=Engine,
+        choices=list(Engine),
+        default=Engine.AUTO,
         help="mutation engine: auto (the best installed), cppcheck, tree-sitter or lexer",
     )
     parser.add_argument("--coverage", choices=["auto", "gcov"], default="auto", help="coverage backend")
     parser.add_argument(
-        "--ui", type=UiMode, choices=list(UiMode), default=UiMode.AUTO,
+        "--ui",
+        type=UiMode,
+        choices=list(UiMode),
+        default=UiMode.AUTO,
         help=(
             "console output: auto (live progress and color on a terminal), live (full-screen dashboard), "
             "log (plain lines) or json (events)"
@@ -45,7 +51,9 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--strict", action="store_true", help="abort if any test is excluded")
     parser.add_argument("--max-per-line", type=_positive_int, metavar="N", help="cap mutants per source line")
     parser.add_argument("--resume", action="store_true", help="continue an interrupted run")
-    parser.add_argument("--all", dest="show_all", action="store_true", help="show every survivor, not just the top actions")
+    parser.add_argument(
+        "--all", dest="show_all", action="store_true", help="show every survivor, not just the top actions"
+    )
     parser.add_argument("--report-dir", type=Path, default=Path("strain-report"), help="where reports are written")
 
 

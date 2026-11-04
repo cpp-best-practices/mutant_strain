@@ -29,9 +29,15 @@ def configure_project(
 ) -> None:
     run_checked("git", "init", "-q", cwd=root)
     run_checked("git", "add", ".", cwd=root)
-    run_checked("git", "-c", "user.name=strain", "-c", "user.email=strain@example.com", "commit", "-qm", "fixture", cwd=root)
     run_checked(
-        "cmake", "-S", root, "-B", build_dir,
+        "git", "-c", "user.name=strain", "-c", "user.email=strain@example.com", "commit", "-qm", "fixture", cwd=root
+    )
+    run_checked(
+        "cmake",
+        "-S",
+        root,
+        "-B",
+        build_dir,
         f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         f"-DCMAKE_CXX_FLAGS={cxx_flags}",
@@ -80,8 +86,12 @@ class EndToEndTest(unittest.TestCase):
         report = json.loads((self.report_dir / "report.json").read_text())
         mutants = report["files"]["src/sample.cpp"]["mutants"]
         return [
-            (mutant["location"]["start"]["line"], mutant["mutatorName"], mutant["replacement"],
-             mutant.get("statusReason", mutant["status"]))
+            (
+                mutant["location"]["start"]["line"],
+                mutant["mutatorName"],
+                mutant["replacement"],
+                mutant.get("statusReason", mutant["status"]),
+            )
             for mutant in mutants
         ]
 
@@ -89,8 +99,16 @@ class EndToEndTest(unittest.TestCase):
         configure_project(self.root, self.build_dir)
 
         exit_code, stdout, _ = run_strain(
-            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^sample_tests$",
-            "--threshold", "50", "--engine", "lexer",
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^sample_tests$",
+            "--threshold",
+            "50",
+            "--engine",
+            "lexer",
         )
 
         self.assertEqual(exit_code, 1, stdout)
@@ -126,8 +144,14 @@ class EndToEndTest(unittest.TestCase):
         configure_project(self.root, self.build_dir)
 
         exit_code, stdout, _ = run_strain(
-            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^sample_tests$",
-            "--engine", engine,
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^sample_tests$",
+            "--engine",
+            engine,
         )
 
         self.assertEqual(exit_code, 0, stdout)
@@ -166,8 +190,14 @@ class EndToEndTest(unittest.TestCase):
         configure_project(self.root, self.build_dir)
 
         exit_code, stdout, _ = run_strain(
-            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^other_tests$",
-            "--ui", "json",
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^other_tests$",
+            "--ui",
+            "json",
         )
 
         self.assertEqual(exit_code, 0, stdout)
@@ -198,12 +228,21 @@ class EndToEndTest(unittest.TestCase):
 
     def test_build_without_coverage_fails_even_when_safety_nets_are_ignored(self) -> None:
         configure_project(
-            self.root, self.build_dir, cxx_flags="-fsanitize=address,undefined", linker_flags="-fsanitize=address,undefined"
+            self.root,
+            self.build_dir,
+            cxx_flags="-fsanitize=address,undefined",
+            linker_flags="-fsanitize=address,undefined",
         )
 
         exit_code, _, stderr = run_strain(
-            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "--safety-nets", "ignore",
-            "--threshold", "50",
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "--safety-nets",
+            "ignore",
+            "--threshold",
+            "50",
         )
 
         self.assertEqual(exit_code, 2)
@@ -224,7 +263,8 @@ class EndToEndTest(unittest.TestCase):
         configure_project(self.root, self.build_dir)
         runner = Runner(
             RunOptions(build_dir=self.build_dir, report_dir=self.report_dir, include="^sample_tests$"),
-            io.StringIO(), io.StringIO(),
+            io.StringIO(),
+            io.StringIO(),
         )
         console = RecordingConsole()
         runner.console = console

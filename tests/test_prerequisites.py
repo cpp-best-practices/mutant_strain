@@ -32,7 +32,9 @@ class CoverageProblemTest(unittest.TestCase):
         self.assertIn("report a pass", NO_COVERAGE)
 
     def test_source_based_coverage_asks_for_gcov_coverage(self) -> None:
-        self.assertEqual(coverage_problem([command("-fprofile-instr-generate", "-fcoverage-mapping")]), SOURCE_BASED_COVERAGE)
+        self.assertEqual(
+            coverage_problem([command("-fprofile-instr-generate", "-fcoverage-mapping")]), SOURCE_BASED_COVERAGE
+        )
         self.assertIn("--coverage", SOURCE_BASED_COVERAGE)
 
 

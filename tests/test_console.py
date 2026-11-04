@@ -60,8 +60,9 @@ class ConsoleTest(unittest.TestCase):
         console.status("running…")
         console.finish()
         self.assertEqual(
-            out.getvalue().replace(console.paint("building…", "\033[2m"), "<building>")
-                          .replace(console.paint("running…", "\033[2m"), "<running>"),
+            out.getvalue()
+            .replace(console.paint("building…", "\033[2m"), "<building>")
+            .replace(console.paint("running…", "\033[2m"), "<running>"),
             f"{CLEAR_LINE}<building>{CLEAR_LINE}done\n{CLEAR_LINE}<running>{CLEAR_LINE}",
         )
 

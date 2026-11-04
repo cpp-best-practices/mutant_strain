@@ -36,9 +36,37 @@ TEMPLATE_BRACKETS = frozenset({"<", ">", ">>"})
 # Keywords after which an operator is unary or a declarator, never a binary operator.
 NON_OPERAND_KEYWORDS = frozenset(
     {
-        "auto", "bool", "case", "char", "char8_t", "char16_t", "char32_t", "co_return", "co_yield", "const",
-        "constexpr", "default", "delete", "do", "double", "else", "float", "int", "long", "new", "noexcept",
-        "operator", "return", "short", "signed", "sizeof", "throw", "unsigned", "void", "volatile", "wchar_t",
+        "auto",
+        "bool",
+        "case",
+        "char",
+        "char8_t",
+        "char16_t",
+        "char32_t",
+        "co_return",
+        "co_yield",
+        "const",
+        "constexpr",
+        "default",
+        "delete",
+        "do",
+        "double",
+        "else",
+        "float",
+        "int",
+        "long",
+        "new",
+        "noexcept",
+        "operator",
+        "return",
+        "short",
+        "signed",
+        "sizeof",
+        "throw",
+        "unsigned",
+        "void",
+        "volatile",
+        "wchar_t",
     }
 )
 TEMPLATE_ARGUMENT_TOKENS = frozenset({"::", ",", "*", "&", "<", ">", ">>", "...", "(", ")"})
@@ -188,8 +216,7 @@ def generate_mutants(
 
 def describe_mutant(mutant: Mutant) -> str:
     return (
-        f"{mutant.file}:{mutant.line}:{mutant.column} [{mutant.operator}] "
-        f"`{mutant.original}` → `{mutant.replacement}`"
+        f"{mutant.file}:{mutant.line}:{mutant.column} [{mutant.operator}] `{mutant.original}` → `{mutant.replacement}`"
     )
 
 
@@ -207,7 +234,11 @@ def _qualified_names(tokens: Sequence[Token]) -> Iterator[tuple[int, str]]:
             index += 1
             continue
         start = index
-        while index + 2 < len(tokens) and tokens[index + 1].text == "::" and tokens[index + 2].kind is TokenKind.IDENTIFIER:
+        while (
+            index + 2 < len(tokens)
+            and tokens[index + 1].text == "::"
+            and tokens[index + 2].kind is TokenKind.IDENTIFIER
+        ):
             index += 2
         yield tokens[start].line, "::".join(tokens[position].text for position in range(start, index + 1, 2))
         index += 1

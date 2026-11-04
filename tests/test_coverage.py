@@ -12,7 +12,13 @@ GCOV_JSON = {
             "file": "/work/src/math.cpp",
             "functions": [
                 {"name": "_Z3absi", "demangled_name": "abs(int)", "start_line": 3, "end_line": 6, "execution_count": 2},
-                {"name": "_Z4zeroi", "demangled_name": "zero(int)", "start_line": 8, "end_line": 8, "execution_count": 0},
+                {
+                    "name": "_Z4zeroi",
+                    "demangled_name": "zero(int)",
+                    "start_line": 8,
+                    "end_line": 8,
+                    "execution_count": 0,
+                },
             ],
             "lines": [
                 {"line_number": 3, "count": 2, "branches": []},

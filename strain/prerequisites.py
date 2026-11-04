@@ -84,7 +84,5 @@ def prerequisite_problems(
     commands: Sequence[CompileCommand], compiler: CompilerIdentity | None, version_text: str | None
 ) -> list[str]:
     return [
-        problem
-        for problem in (coverage_problem(commands), gcov_problem(compiler, version_text))
-        if problem is not None
+        problem for problem in (coverage_problem(commands), gcov_problem(compiler, version_text)) if problem is not None
     ]
