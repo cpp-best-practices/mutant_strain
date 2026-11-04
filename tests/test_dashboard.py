@@ -5,7 +5,7 @@ import threading
 import unittest
 from unittest import mock
 
-from strain.console import UiMode
+from strain.console import BOLD, GREEN, RED, RESET, REVERSE, UiMode, score_style
 from strain.dashboard import (
     ALTERNATE_SCREEN,
     MAIN_SCREEN,
@@ -16,6 +16,7 @@ from strain.dashboard import (
     code_snippet,
     create_console,
     fit,
+    progress_bar,
 )
 from strain.coverage import LineCoverage
 from strain.mutators import Mutant
@@ -78,6 +79,16 @@ class CodeSnippetTest(unittest.TestCase):
         self.assertEqual(code_snippet("+x\ny\n", first, context=2), ["- 1 │ +x", "+ 1 │ -x", "  2 │ y"])
 
 
+class ProgressBarTest(unittest.TestCase):
+    def test_fills_in_proportion_to_the_finished_work(self) -> None:
+        self.assertEqual(progress_bar(0, 4, width=8), "░░░░░░░░")
+        self.assertEqual(progress_bar(1, 4, width=8), "██░░░░░░")
+        self.assertEqual(progress_bar(4, 4, width=8), "████████")
+
+    def test_an_empty_plan_shows_an_empty_bar(self) -> None:
+        self.assertEqual(progress_bar(0, 0, width=4), "░░░░")
+
+
 class DashboardTest(unittest.TestCase):
     def make_dashboard(self, columns: int = 60, lines: int = 30) -> Dashboard:
         dashboard = Dashboard(color=False)
@@ -114,6 +125,19 @@ class DashboardTest(unittest.TestCase):
         self.assertRegex(text, r"▶ running +src/clamp.cpp:3:1")
         self.assertRegex(text, r"pending +src/clamp.cpp:4:1")
         self.assertIn("killed 1  survived 1  score 50.0%", text)
+        self.assertIn("██░░░░░░░░░░░░░░░░░░ 2/20", text)
+
+    def test_colors_highlight_the_mutated_token_and_the_score(self) -> None:
+        dashboard = Dashboard(color=True)
+        dashboard.set_plan(["first"])
+        dashboard.start_mutant(0, SOURCE, MUTANT)
+        dashboard.finish_mutant(0, MutantState.KILLED)
+        frame = dashboard.render(60, 30)
+        text = "\n".join(frame)
+        self.assertIn(f"{BOLD}{REVERSE}{RED}<{RESET}", text)
+        self.assertIn(f"{BOLD}{REVERSE}{GREEN}<={RESET}", text)
+        self.assertIn(f"score {score_style(100.0)}100.0%{RESET}", text)
+        self.assertTrue(all(len(plain(line)) == 60 for line in frame))
 
     def test_queue_scrolls_to_keep_the_current_mutant_visible(self) -> None:
         dashboard = self.make_dashboard()
@@ -184,6 +208,16 @@ class SurvivorBrowserTest(unittest.TestCase):
         self.assertIn("survived   not_detected under sample_tests", text)
         self.assertIn("add a test where `<` and `<=` give different results", text)
         self.assertIn("+ 3 │     if (a <= b)", text)
+        self.assertRegex(text, r"`<` → `<=` +not_detected")
+
+    def test_survivors_view_shows_the_score_of_each_file(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.record_result(killed(SECOND_MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.press("tab")
+        text = "\n".join(dashboard.render(120, 40))
+        self.assertIn("─ Files ─", text)
+        self.assertRegex(text, r"src/clamp.cpp +50.0% +█{10}░{10} +2 mutants +1 survived")
 
     def test_arrow_keys_move_the_selection_and_stay_in_range(self) -> None:
         dashboard = self.make_dashboard()
