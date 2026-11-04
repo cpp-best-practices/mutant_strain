@@ -13,6 +13,38 @@ def parse(*argv: str):
     return options_from_arguments(build_parser().parse_args(["run", *argv]))
 
 
+EVERY_OPTION = (
+    "--build-dir",
+    "build-strain",
+    "-R",
+    "parser",
+    "-E",
+    "slow",
+    "--since",
+    "main",
+    "--strategy",
+    "per-test",
+    "--skip-killed",
+    "--engine",
+    "lexer",
+    "--coverage",
+    "gcov",
+    "--ui",
+    "json",
+    "--safety-nets",
+    "warn",
+    "--threshold",
+    "75.5",
+    "--strict",
+    "--max-per-line",
+    "3",
+    "--resume",
+    "--all",
+    "--report-dir",
+    "out",
+)
+
+
 class RunOptionsTest(unittest.TestCase):
     def test_defaults_match_the_readme(self) -> None:
         options = parse()
@@ -32,36 +64,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.report_dir, Path("strain-report"))
 
     def test_every_option(self) -> None:
-        options = parse(
-            "--build-dir",
-            "build-strain",
-            "-R",
-            "parser",
-            "-E",
-            "slow",
-            "--since",
-            "main",
-            "--strategy",
-            "per-test",
-            "--skip-killed",
-            "--engine",
-            "lexer",
-            "--coverage",
-            "gcov",
-            "--ui",
-            "json",
-            "--safety-nets",
-            "warn",
-            "--threshold",
-            "75.5",
-            "--strict",
-            "--max-per-line",
-            "3",
-            "--resume",
-            "--all",
-            "--report-dir",
-            "out",
-        )
+        options = parse(*EVERY_OPTION)
         self.assertEqual(options.build_dir, Path("build-strain"))
         self.assertEqual((options.include, options.exclude, options.since), ("parser", "slow", "main"))
         self.assertTrue(options.skip_killed)
