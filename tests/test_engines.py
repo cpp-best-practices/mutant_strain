@@ -88,6 +88,11 @@ class TreeSitterEngineTest(DeclaratorCases, unittest.TestCase):
 class CppcheckEngineTest(DeclaratorCases, unittest.TestCase):
     engine = Engine.CPPCHECK
 
+    def test_a_source_cppcheck_cannot_parse_is_an_error(self) -> None:
+        source = "int g(int a, int b) { return a * b; }\nint f(int a) { LOG_DEBUG(a) return a + 1; }\n"
+        with self.assertRaisesRegex(EngineError, "unknownMacro"):
+            generate_mutants("f.cpp", source, engine=self.engine)
+
 
 DUMP = """<?xml version="1.0"?>
 <dumps language="cpp">
@@ -146,6 +151,28 @@ class CppcheckDumpTest(unittest.TestCase):
             cppcheck_engine.sites_from_dump(DUMP, DUMP_SOURCE.replace("==", "!=")),
             [OperatorSite("+", 2, 10, DUMP_SOURCE.index("+")), OperatorSite("<", 2, 23, DUMP_SOURCE.index("<"))],
         )
+
+
+CPPCHECK_STDERR = (
+    "3\tmismatchingContainerExpression\tIterators to containers from different expressions are used together.\n"
+    "528\tsyntaxError\tsyntax error\n"
+    "12\tunknownMacro\tThere is an unknown macro here somewhere. If LOG is a macro then please configure it.\n"
+)
+
+
+class CppcheckParseFailureTest(unittest.TestCase):
+    def test_parse_failures_are_reported(self) -> None:
+        self.assertEqual(
+            cppcheck_engine.parse_failures(CPPCHECK_STDERR),
+            [
+                "line 528: syntax error [syntaxError]",
+                "line 12: There is an unknown macro here somewhere. If LOG is a macro then please configure it. "
+                "[unknownMacro]",
+            ],
+        )
+
+    def test_findings_alone_are_not_failures(self) -> None:
+        self.assertEqual(cppcheck_engine.parse_failures(CPPCHECK_STDERR.splitlines(keepends=True)[0]), [])
 
 
 class ResolveEngineTest(unittest.TestCase):

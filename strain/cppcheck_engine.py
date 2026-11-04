@@ -14,6 +14,14 @@ MISSING = "the cppcheck engine needs cppcheck on PATH"
 SOURCE_NAME = "source.cpp"
 DUMP_SUFFIX = ".dump"
 MAIN_FILE_INDEX = "0"
+# One line per message on stderr: cppcheck still exits 0 and writes a dump when it cannot parse a configuration,
+# but leaves that configuration out of the dump, so only these messages tell a failed parse from a file without operators.
+FIELD_SEPARATOR = "\t"
+MESSAGE_TEMPLATE = FIELD_SEPARATOR.join(("{line}", "{id}", "{message}"))
+# The ids of cppcheck's InternalError types: each one means cppcheck gave up on a configuration.
+PARSE_FAILURE_IDS = frozenset(
+    {"syntaxError", "unknownMacro", "internalAstError", "internalError", "cppcheckLimit", "instantiationError"}
+)
 
 
 def is_available() -> bool:
@@ -21,7 +29,18 @@ def is_available() -> bool:
 
 
 def cppcheck_command(path: Path) -> list[str]:
-    return [CPPCHECK, "--dump", "--quiet", "--language=c++", str(path)]
+    return [CPPCHECK, "--dump", "--quiet", "--language=c++", f"--template={MESSAGE_TEMPLATE}", str(path)]
+
+
+def parse_failures(stderr: str) -> list[str]:
+    """cppcheck's reasons for giving up on a configuration, among the messages in `stderr`."""
+    failures: list[str] = []
+    for message in stderr.splitlines():
+        fields = message.split(FIELD_SEPARATOR, 2)
+        if len(fields) == 3 and fields[1] in PARSE_FAILURE_IDS:
+            line, failure_id, text = fields
+            failures.append(f"line {line}: {text} [{failure_id}]")
+    return failures
 
 
 def run_dump(source: str) -> str:
@@ -36,6 +55,9 @@ def run_dump(source: str) -> str:
         dump = path.with_name(path.name + DUMP_SUFFIX)
         if not dump.is_file():
             raise EngineError(f"cppcheck wrote no dump (exit code {result.returncode}): {result.stderr.strip()}")
+        failures = parse_failures(result.stderr)
+        if failures:
+            raise EngineError(f"cppcheck cannot parse it, {failures[0]}")
         return dump.read_bytes().decode(SOURCE_ENCODING, SOURCE_ERRORS)
 
 
