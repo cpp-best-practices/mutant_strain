@@ -2,7 +2,6 @@
 
 import json
 import math
-import os
 import re
 import subprocess
 import time
@@ -40,7 +39,7 @@ def executables_by_test(build_dir: Path) -> dict[str, Path]:
     for test in json.loads(listing.stdout)["tests"]:
         command = test.get("command")
         if command:
-            executables[test["name"]] = Path(os.path.normpath(build_dir / command[0]))
+            executables[test["name"]] = (build_dir / command[0]).resolve()
     return executables
 
 

@@ -62,6 +62,37 @@ class CompilationDatabaseTest(unittest.TestCase):
         self.assertEqual(command.syntax_only_arguments(), ["g++", "a.cpp", "-fsyntax-only"])
 
 
+class SymlinkedCompilationDatabaseTest(unittest.TestCase):
+    """Like macOS, where the temporary directory /var/folders is a symlink into /private/var."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.real_dir = Path(self._tmp.name).resolve() / "private"
+        (self.real_dir / "src").mkdir(parents=True)
+        (self.real_dir / "src" / "a.cpp").write_text("int f() { return 1; }\n")
+        self.link_dir = Path(self._tmp.name).resolve() / "linked"
+        self.link_dir.symlink_to(self.real_dir, target_is_directory=True)
+        self.database = CompilationDatabase.from_entries(
+            [
+                {
+                    "directory": str(self.link_dir / "build"),
+                    "arguments": ["g++", "-c", "../src/a.cpp"],
+                    "file": "../src/a.cpp",
+                }
+            ]
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_files_are_listed_by_their_resolved_path(self) -> None:
+        self.assertEqual([command.file for command in self.database.commands], [self.real_dir / "src" / "a.cpp"])
+
+    def test_lookup_by_either_path(self) -> None:
+        self.assertIsNotNone(self.database.command_for(self.real_dir / "src" / "a.cpp"))
+        self.assertIsNotNone(self.database.command_for(self.link_dir / "src" / "a.cpp"))
+
+
 def compile_command(*arguments: str) -> CompileCommand:
     return CompileCommand(directory=Path("/b"), file=Path("/b/a.cpp"), arguments=("g++", *arguments, "-c", "a.cpp"))
 

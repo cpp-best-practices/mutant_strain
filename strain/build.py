@@ -1,7 +1,6 @@
 """The compilation database, `-fsyntax-only` pre-checks and incremental rebuilds."""
 
 import json
-import os
 import re
 import shlex
 import subprocess
@@ -55,7 +54,7 @@ def _command_from_entry(entry: Mapping[str, Any]) -> CompileCommand:
     arguments = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
     return CompileCommand(
         directory=directory,
-        file=Path(os.path.normpath(directory / entry["file"])),
+        file=(directory / entry["file"]).resolve(),
         arguments=tuple(arguments),
     )
 
@@ -77,7 +76,7 @@ class CompilationDatabase:
         return cls.from_entries(json.loads(path.read_text()))
 
     def command_for(self, file: Path) -> CompileCommand | None:
-        return self._by_file.get(Path(os.path.normpath(file)))
+        return self._by_file.get(file.resolve())
 
 
 def build_command(build_dir: Path, target: str | None = None) -> list[str]:
@@ -139,9 +138,7 @@ def _read_codemodel_artifacts(reply_dir: Path) -> dict[Path, Target]:
         for target in configuration["targets"]:
             details = json.loads((reply_dir / target["jsonFile"]).read_text())
             for artifact in details.get("artifacts", []):
-                artifacts[Path(os.path.normpath(build_dir / artifact["path"]))] = _target_from_details(
-                    details, source_dir
-                )
+                artifacts[(build_dir / artifact["path"]).resolve()] = _target_from_details(details, source_dir)
     return artifacts
 
 

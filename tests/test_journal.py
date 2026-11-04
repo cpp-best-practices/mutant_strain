@@ -36,7 +36,7 @@ class JournalTest(unittest.TestCase):
 
         restored = Journal(self.root / "journal").recover()
 
-        self.assertEqual(restored, [self.source])
+        self.assertEqual(restored, [self.source.resolve()])
         self.assertEqual(self.source.read_bytes(), b"int f() { return 1 + 2; }\n")
         self.assertEqual(list((self.root / "journal").iterdir()), [])
 

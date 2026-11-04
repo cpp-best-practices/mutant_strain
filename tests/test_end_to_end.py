@@ -60,6 +60,18 @@ class RecordingConsole(Console):
         self.finished_runs += 1
 
 
+SINGLE_TEST_STATES = [
+    (3, "aor", "-", "killed"),
+    (7, "ror", "<=", "survived"),
+    (7, "ror", ">=", "survived"),
+    (11, "lcr", "||", "survived"),
+    (13, "aor", "/", "killed_by_sanitizer"),
+    (15, "aor", "-", "ignored"),
+    (17, "aor", "/", "compile_error"),
+    (17, "aor", "/", "compile_error"),
+]
+
+
 def run_strain(*argv: str) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -112,19 +124,12 @@ class EndToEndTest(unittest.TestCase):
         )
 
         self.assertEqual(exit_code, 1, stdout)
-        self.assertEqual(
-            self.mutant_states(),
-            [
-                (3, "aor", "-", "killed"),
-                (7, "ror", "<=", "survived"),
-                (7, "ror", ">=", "survived"),
-                (11, "lcr", "||", "survived"),
-                (13, "aor", "/", "killed_by_sanitizer"),
-                (15, "aor", "-", "ignored"),
-                (17, "aor", "/", "compile_error"),
-                (17, "aor", "/", "compile_error"),
-            ],
-        )
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+        self.assert_single_test_log(stdout)
+        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+        self.assertTrue((self.report_dir / "events.jsonl").is_file())
+
+    def assert_single_test_log(self, stdout: str) -> None:
         self.assertIn("sample_tests   score 40.0%   killed 1  sanitizer 1  timeout 0  survived 3", stdout)
         self.assertIn("✓ working tree is clean", stdout)
         self.assertIn("✓ selected 1 test: sample_tests", stdout)
@@ -136,9 +141,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("✓ sources restored and rebuilt", stdout)
         self.assertIn("mutation score 40.0%   ✗ below --threshold 50%", stdout)
         self.assertIn("clamp_to_zero() is pseudo-tested: nothing checks its result", stdout)
-        self.assertIn(f"{self.root / 'src' / 'sample.cpp'}:7:13: warning: survived [ror]", stdout)
-        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
-        self.assertTrue((self.report_dir / "events.jsonl").is_file())
+        self.assertIn(f"{self.root.resolve() / 'src' / 'sample.cpp'}:7:13: warning: survived [ror]", stdout)
 
     def assert_parsing_engine_skips_declarators(self, engine: str) -> None:
         configure_project(self.root, self.build_dir)

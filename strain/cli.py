@@ -21,13 +21,16 @@ def _positive_int(text: str) -> int:
     return value
 
 
-def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--build-dir", type=Path, default=Path("."), help="CMake build folder")
     parser.add_argument("-R", dest="include", metavar="REGEX", help="include tests by regex, as in ctest")
     parser.add_argument("-E", dest="exclude", metavar="REGEX", help="exclude tests by regex, as in ctest")
     parser.add_argument("--since", metavar="REF", help="mutate only lines changed since a git ref")
     parser.add_argument("--strategy", choices=["per-test"], default="per-test", help="mutation strategy")
     parser.add_argument("--skip-killed", action="store_true", help="skip mutants an earlier test already killed")
+
+
+def _add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--engine",
         type=Engine,
@@ -46,15 +49,28 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
             "log (plain lines) or json (events)"
         ),
     )
+
+
+def _add_policy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--safety-nets", type=Level, choices=list(Level), help="level for every safety net check")
     parser.add_argument("--threshold", type=float, metavar="PERCENT", help="exit non-zero below this score")
     parser.add_argument("--strict", action="store_true", help="abort if any test is excluded")
     parser.add_argument("--max-per-line", type=_positive_int, metavar="N", help="cap mutants per source line")
     parser.add_argument("--resume", action="store_true", help="continue an interrupted run")
+
+
+def _add_report_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--all", dest="show_all", action="store_true", help="show every survivor, not just the top actions"
     )
     parser.add_argument("--report-dir", type=Path, default=Path("strain-report"), help="where reports are written")
+
+
+def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
+    _add_selection_arguments(parser)
+    _add_backend_arguments(parser)
+    _add_policy_arguments(parser)
+    _add_report_arguments(parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
