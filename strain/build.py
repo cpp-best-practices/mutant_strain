@@ -4,6 +4,7 @@ import json
 import re
 import shlex
 import subprocess
+import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,6 +106,30 @@ def build(build_dir: Path, target: str | None = None, on_output: Callable[[str],
             process.kill()
             raise
     return process.returncode == 0
+
+
+# Make decides what to rebuild by comparing modification times, and the make macOS ships (GNU make 3.81) and some
+# file systems keep only whole seconds of them. The margin covers file systems that stamp with a clock a tick behind.
+TIMESTAMP_RESOLUTION_SECONDS = 1.0
+TIMESTAMP_MARGIN_SECONDS = 0.05
+
+
+class BuildClock:
+    """Orders source writes after the last build, so a build never mistakes a changed source for an up-to-date one.
+
+    A source written in the same second its object was built looks no newer than the object to a make that compares
+    whole seconds, which then skips the rebuild and runs the previous mutant's binary.
+    """
+
+    def __init__(self) -> None:
+        self.last_build_finished = 0.0
+
+    def build_finished(self) -> None:
+        self.last_build_finished = time.time()
+
+    def wait_until_writes_outdate_the_build(self) -> None:
+        next_second = (self.last_build_finished // TIMESTAMP_RESOLUTION_SECONDS + 1) * TIMESTAMP_RESOLUTION_SECONDS
+        time.sleep(max(0.0, next_second + TIMESTAMP_MARGIN_SECONDS - time.time()))
 
 
 def _file_api_directory(build_dir: Path) -> Path:

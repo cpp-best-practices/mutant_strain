@@ -10,6 +10,7 @@ from typing import TextIO
 
 from . import ctest, git
 from .build import (
+    BuildClock,
     CompilationDatabase,
     CompileCommand,
     Target,
@@ -136,7 +137,8 @@ class Runner:
         self.console = create_console(out, err, options.ui)
         self.build_dir = options.build_dir.resolve()
         self.source_dir = cmake_source_dir(self.build_dir)
-        self.journal = Journal(self.build_dir / "strain-journal")
+        self.build_clock = BuildClock()
+        self.journal = Journal(self.build_dir / "strain-journal", self.build_clock.wait_until_writes_outdate_the_build)
         self.coverage = GcovCoverage(self.build_dir)
         self.config = Config()
         self.database = CompilationDatabase([])
@@ -157,7 +159,10 @@ class Runner:
 
     def build(self, target: str | None = None) -> bool:
         self.console.build_started(shlex.join(build_command(self.build_dir, target)))
-        return build(self.build_dir, target, self.console.build_output)
+        try:
+            return build(self.build_dir, target, self.console.build_output)
+        finally:
+            self.build_clock.build_finished()
 
     def build_or_fail(self, activity: str, success: str, failure: str) -> None:
         self.console.status(f"  {activity}…")
