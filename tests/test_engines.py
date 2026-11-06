@@ -2,7 +2,7 @@ import unittest
 from unittest import mock
 
 from strain import cppcheck_engine, tree_sitter_engine
-from strain.mutators import Engine, apply_mutant, generate_mutants, resolve_engine
+from strain.mutators import Engine, apply_mutant, fallback_engine, generate_mutants, resolve_engine
 from strain.operator_sites import EngineError, OperatorSite
 
 
@@ -88,6 +88,11 @@ class TreeSitterEngineTest(DeclaratorCases, unittest.TestCase):
 class CppcheckEngineTest(DeclaratorCases, unittest.TestCase):
     engine = Engine.CPPCHECK
 
+    def test_a_source_cppcheck_cannot_parse_is_an_error(self) -> None:
+        source = "int g(int a, int b) { return a * b; }\nint f(int a) { LOG_DEBUG(a) return a + 1; }\n"
+        with self.assertRaisesRegex(EngineError, "unknownMacro"):
+            generate_mutants("f.cpp", source, engine=self.engine)
+
 
 DUMP = """<?xml version="1.0"?>
 <dumps language="cpp">
@@ -148,6 +153,28 @@ class CppcheckDumpTest(unittest.TestCase):
         )
 
 
+CPPCHECK_STDERR = (
+    "3\tmismatchingContainerExpression\tIterators to containers from different expressions are used together.\n"
+    "528\tsyntaxError\tsyntax error\n"
+    "12\tunknownMacro\tThere is an unknown macro here somewhere. If LOG is a macro then please configure it.\n"
+)
+
+
+class CppcheckParseFailureTest(unittest.TestCase):
+    def test_parse_failures_are_reported(self) -> None:
+        self.assertEqual(
+            cppcheck_engine.parse_failures(CPPCHECK_STDERR),
+            [
+                "line 528: syntax error [syntaxError]",
+                "line 12: There is an unknown macro here somewhere. If LOG is a macro then please configure it. "
+                "[unknownMacro]",
+            ],
+        )
+
+    def test_findings_alone_are_not_failures(self) -> None:
+        self.assertEqual(cppcheck_engine.parse_failures(CPPCHECK_STDERR.splitlines(keepends=True)[0]), [])
+
+
 class ResolveEngineTest(unittest.TestCase):
     def available(self, cppcheck: bool, tree_sitter: bool) -> None:
         for module, available in ((cppcheck_engine, cppcheck), (tree_sitter_engine, tree_sitter)):
@@ -173,6 +200,16 @@ class ResolveEngineTest(unittest.TestCase):
             with self.subTest(engine=engine), self.assertRaises(EngineError):
                 resolve_engine(engine)
         self.assertIs(resolve_engine(Engine.LEXER), Engine.LEXER)
+
+    def test_fallback_is_the_next_installed_engine(self) -> None:
+        self.available(cppcheck=True, tree_sitter=False)
+        self.assertIs(fallback_engine(Engine.CPPCHECK), Engine.LEXER)
+        self.assertIsNone(fallback_engine(Engine.LEXER))
+
+    def test_fallback_prefers_tree_sitter_to_the_lexer(self) -> None:
+        self.available(cppcheck=True, tree_sitter=True)
+        self.assertIs(fallback_engine(Engine.CPPCHECK), Engine.TREE_SITTER)
+        self.assertIs(fallback_engine(Engine.TREE_SITTER), Engine.LEXER)
 
 
 if __name__ == "__main__":

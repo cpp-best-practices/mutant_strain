@@ -102,7 +102,7 @@ class Mutant:
     @property
     def id(self) -> str:
         key = f"{self.file}:{self.line}:{self.column}:{self.original}:{self.replacement}"
-        return hashlib.sha1(key.encode()).hexdigest()[:8]
+        return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:8]
 
 
 def _is_operand_end(token: Token) -> bool:
@@ -175,6 +175,12 @@ def resolve_engine(requested: Engine) -> Engine:
     if not engine_is_available(requested):
         raise EngineError(PARSING_ENGINES[requested].MISSING)
     return requested
+
+
+def fallback_engine(engine: Engine) -> Engine | None:
+    """The best installed engine less precise than `engine`, for the sources `engine` cannot parse."""
+    later = ENGINE_PREFERENCE[ENGINE_PREFERENCE.index(engine) + 1 :]
+    return next((candidate for candidate in later if engine_is_available(candidate)), None)
 
 
 def operator_sites(engine: Engine, source: str) -> list[OperatorSite]:

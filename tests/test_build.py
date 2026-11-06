@@ -1,10 +1,12 @@
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from strain.build import (
+    BuildClock,
     CompileCommand,
     CompilationDatabase,
     CompilerIdentity,
@@ -29,6 +31,24 @@ ENTRIES = [
         "file": "../tests/t.cpp",
     },
 ]
+
+
+class BuildClockTest(unittest.TestCase):
+    def test_a_write_after_the_wait_lands_in_a_later_second_than_the_build(self) -> None:
+        clock = BuildClock()
+        clock.build_finished()
+
+        clock.wait_until_writes_outdate_the_build()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "a.cpp"
+            source.write_bytes(b"int f();\n")
+
+            self.assertGreater(int(source.stat().st_mtime), int(clock.last_build_finished))
+
+    def test_no_wait_before_the_first_build(self) -> None:
+        start = time.monotonic()
+        BuildClock().wait_until_writes_outdate_the_build()
+        self.assertLess(time.monotonic() - start, 0.5)
 
 
 class CompilationDatabaseTest(unittest.TestCase):
@@ -161,8 +181,14 @@ class TargetBuildTest(unittest.TestCase):
 
     def test_artifacts_map_to_their_targets(self) -> None:
         artifacts = target_artifacts(self.build_dir)
-        self.assertEqual(artifacts.get(self.build_dir / "sample_tests"), "sample_tests")
-        self.assertEqual(artifacts.get(self.build_dir / "other_tests"), "other_tests")
+        self.assertEqual(artifacts[self.build_dir / "sample_tests"].name, "sample_tests")
+        self.assertEqual(artifacts[self.build_dir / "other_tests"].name, "other_tests")
+
+    def test_targets_list_their_own_sources(self) -> None:
+        artifacts = target_artifacts(self.build_dir)
+        self.assertEqual(
+            artifacts[self.build_dir / "sample_tests"].sources, {(FIXTURE / "tests" / "sample_tests.cpp").resolve()}
+        )
 
     def test_building_a_target_leaves_other_targets_alone(self) -> None:
         self.assertTrue(build(self.build_dir, "sample_tests"))
