@@ -7,11 +7,11 @@ from strain.cli import build_parser, options_from_arguments
 from strain.console import UiMode
 from strain.estimate import Order
 from strain.mutators import Engine
-from strain.runner import Strategy
+from strain.runner import RunOptions, Strategy
 from strain.safety_nets import Level
 
 
-def parse(*argv: str):
+def parse(*argv: str) -> RunOptions:
     return options_from_arguments(build_parser().parse_args(["run", *argv]))
 
 
