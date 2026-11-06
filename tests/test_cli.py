@@ -6,10 +6,11 @@ from pathlib import Path
 from strain.cli import build_parser, options_from_arguments
 from strain.console import UiMode
 from strain.mutators import Engine
+from strain.runner import RunOptions
 from strain.safety_nets import Level
 
 
-def parse(*argv: str):
+def parse(*argv: str) -> RunOptions:
     return options_from_arguments(build_parser().parse_args(["run", *argv]))
 
 

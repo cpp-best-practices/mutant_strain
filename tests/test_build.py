@@ -19,7 +19,7 @@ from strain.build import (
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_project"
 
-ENTRIES = [
+ENTRIES: list[dict[str, object]] = [
     {
         "directory": "/work/build",
         "command": "/usr/bin/g++ -I/work/include -MD -MT obj.o -MF obj.o.d --coverage -o obj.o -c /work/src/math.cpp",

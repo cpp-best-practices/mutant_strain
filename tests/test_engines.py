@@ -1,12 +1,19 @@
 import unittest
+from typing import TYPE_CHECKING
 from unittest import mock
 
 from strain import cppcheck_engine, tree_sitter_engine
 from strain.mutators import Engine, apply_mutant, fallback_engine, generate_mutants, resolve_engine
 from strain.operator_sites import EngineError, OperatorSite
 
+# The shared cases are a mixin, so unittest does not run them without an engine; only the type checker sees a TestCase.
+if TYPE_CHECKING:
+    EngineCasesBase = unittest.TestCase
+else:
+    EngineCasesBase = object
 
-class EngineCases:
+
+class EngineCases(EngineCasesBase):
     """Behavior every mutation engine shares; each subclass runs it against one engine."""
 
     engine: Engine
