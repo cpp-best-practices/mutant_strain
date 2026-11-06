@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 tree-sitter = ["tree-sitter>=0.23", "tree-sitter-cpp>=0.23"]
+ui-snapshot = ["pyte>=0.8", "pillow>=10"]
 
 [project.scripts]
 strain = "strain.cli:main"
