@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TextIO
+from typing import Protocol, TextIO
 
 from .config import CONFIG_FILE
 from .console import (
@@ -27,7 +27,7 @@ from .console import (
     plural,
 )
 from .coverage import LineCoverage
-from .keys import KeyHandler, KeyReader, stdin_key_reader
+from .keys import KeyHandler, stdin_key_reader
 from .mutators import Mutant, apply_mutant, describe_mutant
 from .report import action_items, hint
 from .results import CombinedResult, MutantResult, MutantState, combine, mutation_score
@@ -55,7 +55,13 @@ DETAIL_LABEL_WIDTH = 10
 QUIT_POLL_SECONDS = 0.1
 
 TerminalSize = Callable[[], os.terminal_size]
-KeyReaderFactory = Callable[[KeyHandler], KeyReader | None]
+
+
+class KeySource(Protocol):
+    def close(self) -> None: ...
+
+
+KeyReaderFactory = Callable[[KeyHandler], KeySource | None]
 
 
 def visible_length(text: str) -> int:

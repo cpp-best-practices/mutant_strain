@@ -1,5 +1,8 @@
 # mutant_strain
 
+[![ci](https://github.com/cpp-best-practices/mutant_strain/actions/workflows/ci.yml/badge.svg)](https://github.com/cpp-best-practices/mutant_strain/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cpp-best-practices/mutant_strain/badge)](https://scorecard.dev/viewer/?uri=github.com/cpp-best-practices/mutant_strain)
+
 **Mutation testing for C++ projects built with CMake and tested with CTest.**
 
 strain changes your code in small ways (`<` becomes `<=`, `&&` becomes `||`) and checks whether your tests notice. Every mutant that survives points at a test that runs the code but doesn't really check it.

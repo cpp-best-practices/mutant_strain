@@ -3,6 +3,7 @@ import os
 import re
 import threading
 import unittest
+from collections.abc import Callable
 from unittest import mock
 
 from strain.console import UiMode
@@ -33,11 +34,11 @@ class TerminalBuffer(io.StringIO):
         return True
 
 
-def terminal(columns: int, lines: int):
+def terminal(columns: int, lines: int) -> Callable[[], os.terminal_size]:
     return lambda: os.terminal_size((columns, lines))
 
 
-def no_keys(on_key):
+def no_keys(on_key: Callable[[str], None]) -> None:
     return None
 
 
@@ -283,14 +284,15 @@ class LiveConsoleTest(unittest.TestCase):
 
     def test_run_finished_keeps_the_browser_open_until_q_is_pressed(self) -> None:
         keys = FakeKeys()
-        console = LiveConsole(TerminalBuffer(), io.StringIO(), terminal(60, 20), lambda on_key: keys)
+        out = TerminalBuffer()
+        console = LiveConsole(out, io.StringIO(), terminal(60, 20), lambda on_key: keys)
         console.mutant_evaluated(survived(MUTANT), SOURCE, LINE_COVERAGE)
         waiter = threading.Thread(target=console.run_finished)
         waiter.start()
         console.key_pressed("tab")
         waiter.join(0.2)
         self.assertTrue(waiter.is_alive())
-        self.assertIn("Survivors (1)", console.out.getvalue())
+        self.assertIn("Survivors (1)", out.getvalue())
         console.key_pressed("q")
         waiter.join(2)
         self.assertFalse(waiter.is_alive())

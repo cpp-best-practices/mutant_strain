@@ -37,3 +37,13 @@ ignore = ["S603", "S607"]
 [tool.coverage.run]
 branch = true
 source = ["strain"]
+
+[tool.mypy]
+strict = true
+files = ["strain", "tests"]
+exclude = ["^tests/fixtures/"]
+
+[[tool.mypy.overrides]]
+# The tree-sitter engine is an optional extra, which CI does not install for the type checker.
+module = ["tree_sitter", "tree_sitter_cpp"]
+ignore_missing_imports = true

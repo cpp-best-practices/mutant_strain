@@ -344,6 +344,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertTrue(survivors)
         self.assertTrue(all(source.startswith('#include "sample.hpp"') for _, source, _ in console.evaluated))
         clamp = next(line for result, line in survivors if result.mutant.line == 7)
+        assert clamp is not None
         self.assertEqual(clamp.count, 1)
         self.assertEqual(console.finished_runs, 1)
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from . import cppcheck_engine, tree_sitter_engine
 from .lexer import Token, TokenKind, tokenize
-from .operator_sites import EngineError, OperatorSite
+from .operator_sites import EngineError, OperatorSite, ParsingEngine
 
 REPLACEMENTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "<": ("ror", ("<=", ">=")),
@@ -161,7 +161,10 @@ def lexer_sites(source: str) -> list[OperatorSite]:
     return [OperatorSite(token.text, token.line, token.column, token.offset) for token in _mutable_tokens(code)]
 
 
-PARSING_ENGINES = {Engine.CPPCHECK: cppcheck_engine, Engine.TREE_SITTER: tree_sitter_engine}
+PARSING_ENGINES: dict[Engine, ParsingEngine] = {
+    Engine.CPPCHECK: cppcheck_engine,
+    Engine.TREE_SITTER: tree_sitter_engine,
+}
 
 
 def engine_is_available(engine: Engine) -> bool:

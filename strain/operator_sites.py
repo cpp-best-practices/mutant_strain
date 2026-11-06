@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass
+from typing import Protocol
 
 SOURCE_ENCODING = "utf-8"
 SOURCE_ERRORS = "surrogateescape"
@@ -19,6 +20,16 @@ class OperatorSite:
     line: int
     column: int
     offset: int
+
+
+class ParsingEngine(Protocol):
+    """A mutation engine that parses sources, as a module such as cppcheck_engine provides it."""
+
+    MISSING: str
+
+    def is_available(self) -> bool: ...
+
+    def operator_sites(self, source: str) -> list[OperatorSite]: ...
 
 
 class LineIndex:
