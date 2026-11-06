@@ -61,6 +61,7 @@ PAGE_ROWS = 10
 DETAIL_LABEL_WIDTH = 10
 # How often the finished run checks whether the user pressed q.
 QUIT_POLL_SECONDS = 0.1
+EQUIVALENT_HINT = f"equivalent? list it under [ignore] mutants in {CONFIG_FILE}"
 
 TerminalSize = Callable[[], os.terminal_size]
 KeyReaderFactory = Callable[[KeyHandler], KeyReader | None]
@@ -197,6 +198,7 @@ class Dashboard:
         self.contexts: dict[str, MutantContext] = {}
         self._combined: list[CombinedResult] | None = None
         self.test = ""
+        self.test_name = ""
         self.queue: list[QueueEntry] = []
         self.current: int | None = None
         self.mutant_title = "waiting for the first mutant"
@@ -206,13 +208,15 @@ class Dashboard:
         self.build_command = ""
         self.build_log: collections.deque[str] = collections.deque(maxlen=BUILD_LOG_LINES)
         self.status = ""
-        self.finished: list[MutantState] = []
 
     def paint(self, text: str, style: str) -> str:
         return paint(text, style, self.color)
 
     def set_test(self, name: str, number: int, total: int) -> None:
+        """Starts a test with an empty queue, so the title never pairs it with the previous test's mutants."""
         self.test = f"Test {number}/{total}: {name}"
+        self.test_name = name
+        self.set_plan([])
 
     def set_plan(self, descriptions: Sequence[str]) -> None:
         self.queue = [QueueEntry(description) for description in descriptions]
@@ -228,8 +232,6 @@ class Dashboard:
 
     def finish_mutant(self, index: int, state: str) -> None:
         self.queue[index].state = state
-        if isinstance(state, MutantState):
-            self.finished.append(state)
 
     def record_result(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
         self.results.append(result)
@@ -292,19 +294,20 @@ class Dashboard:
 
     def progress(self) -> str:
         done = sum(entry.state not in (PENDING, RUNNING) for entry in self.queue)
-        return f"{self.paint(progress_bar(done, len(self.queue)), CYAN)} {done}/{len(self.queue)}"
+        label = " ".join(part for part in (self.test_name, f"{done}/{len(self.queue)}") if part)
+        return f"{self.paint(progress_bar(done, len(self.queue)), CYAN)} {label}"
 
     def score(self, score: float | None) -> str:
         percent = None if score is None else score * 100
         return self.paint(format_score(score), score_style(percent))
 
     def tally(self) -> str:
+        """The progress of the current test, then the totals over every test, counting each mutant once."""
+        states = [entry.state for entry in self.combined()]
         counts = [
-            self.paint(f"{state} {self.finished.count(state)}", STATE_STYLES[state])
-            for state in MutantState
-            if state in self.finished
+            self.paint(f"{state} {states.count(state)}", STATE_STYLES[state]) for state in MutantState if state in states
         ]
-        return "  ".join([self.progress(), *counts, f"score {self.score(mutation_score(self.finished))}"])
+        return "  ".join([self.progress(), *counts, f"score {self.score(mutation_score(states))}"])
 
     def rule(self, title: str, width: int) -> str:
         filler = "─" * max(0, width - len(f"─ {title} "))
@@ -402,25 +405,33 @@ class Dashboard:
     def detail(self, label: str, value: str) -> str:
         return f"{self.paint(f'{label:<{DETAIL_LABEL_WIDTH}}', DIM)} {value}"
 
-    def survivor_details(self, entry: CombinedResult) -> list[str]:
+    def survivor_facts(self, entry: CombinedResult) -> list[str]:
         mutant = entry.mutant
         context = self.contexts[mutant.id]
         kind = "" if entry.survivor is None else f"{entry.survivor} "
         return [
-            f"id {mutant.id}  {self.paint(f'equivalent? list it under [ignore] mutants in {CONFIG_FILE}', DIM)}",
+            self.detail("id", f"{mutant.id}  {self.paint(EQUIVALENT_HINT, DIM)}"),
             self.detail("function", entry.function or "unknown"),
             self.detail("coverage", execution_summary(mutant.line, context.executions)),
             self.detail(str(MutantState.SURVIVED), f"{kind}under {', '.join(entry.covered_by)}"),
             self.detail("hint", hint(entry)),
             "",
-            *self.snippet_lines(code_snippet(context.source, mutant), mutant, token_offset(context.source, mutant)),
         ]
+
+    def survivor_details(self, entry: CombinedResult, rows: int) -> list[str]:
+        """The facts about `entry`, then as much of its source as fits in `rows`."""
+        mutant = entry.mutant
+        source = self.contexts[mutant.id].source
+        facts = self.survivor_facts(entry)
+        context = max(SNIPPET_CONTEXT, (rows - len(facts) - len(CHANGE_STYLES)) // 2)
+        snippet = self.snippet_lines(code_snippet(source, mutant, context), mutant, token_offset(source, mutant))
+        return [*facts, *snippet][:rows]
 
     def survivor_detail_lines(self, rows: int) -> list[str]:
         survivors = self.survivors()
         if rows <= 0 or not survivors:
             return []
-        return self.survivor_details(survivors[self.selected_survivor(survivors)])[:rows]
+        return self.survivor_details(survivors[self.selected_survivor(survivors)], rows)
 
     def build_log_lines(self, rows: int) -> list[str]:
         if rows <= 0:
