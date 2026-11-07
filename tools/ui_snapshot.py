@@ -104,7 +104,7 @@ def spawn(project: Path, columns: int, lines: int, extra: Sequence[str]) -> tupl
     if pid == 0:
         os.chdir(project)
         os.environ["TERM"] = "xterm-256color"
-        os.execvp(sys.executable, [sys.executable, "-m", "strain", "run", "--ui", "live", *extra])
+        os.execvp(sys.executable, [sys.executable, "-m", "strain", "run", "--ui", "live", *extra])  # noqa: S606 - replaces the forked child with strain, by design
     ioctl(descriptor, termios.TIOCSWINSZ, struct.pack("HHHH", lines, columns, 0, 0))
     os.kill(pid, signal.SIGWINCH)
     return pid, descriptor

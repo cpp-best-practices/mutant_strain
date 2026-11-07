@@ -72,7 +72,7 @@ def _mutant_item(entry: CombinedResult) -> str:
     survivor = "" if entry.survivor is None else f" ({escape(entry.survivor)})"
     return (
         f'<li class="{_state_class(entry.state)}"><span class="state">{escape(entry.state)}</span>{survivor} '
-        f"{_change(entry)} <span class=\"detail\">column {mutant.column} [{escape(mutant.operator)}] id {mutant.id}</span>"
+        f'{_change(entry)} <span class="detail">column {mutant.column} [{escape(mutant.operator)}] id {mutant.id}</span>'
         f" {_explanation(entry)}</li>"
     )
 
@@ -148,8 +148,12 @@ def _counts(combined: Sequence[CombinedResult]) -> str:
 def html_report(combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> str:
     score = mutation_score(entry.state for entry in combined)
     body = (
-        [f"<p>{len(combined)} mutants: {_counts(combined)}</p>", *_files_table(combined), *_survivor_list(combined),
-         *_file_sections(combined, sources)]
+        [
+            f"<p>{len(combined)} mutants: {_counts(combined)}</p>",
+            *_files_table(combined),
+            *_survivor_list(combined),
+            *_file_sections(combined, sources),
+        ]
         if combined
         else ["<p>No mutants were generated.</p>"]
     )

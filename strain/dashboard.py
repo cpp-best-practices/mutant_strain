@@ -322,7 +322,9 @@ class Dashboard:
         """
         states = [entry.state for entry in self.combined()]
         counts = [
-            self.paint(f"{state} {states.count(state)}", STATE_STYLES[state]) for state in MutantState if state in states
+            self.paint(f"{state} {states.count(state)}", STATE_STYLES[state])
+            for state in MutantState
+            if state in states
         ]
         return "  ".join([self.progress(), f"score {self.score(mutation_score(states))}", *counts])
 

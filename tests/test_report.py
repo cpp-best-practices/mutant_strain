@@ -120,7 +120,9 @@ OTHER = Mutant(file="src/other.cpp", line=1, column=1, offset=0, operator="ror",
 
 class SourceExcerptTest(unittest.TestCase):
     def test_caret_points_at_the_operator_and_the_fix_it_shows_the_replacement(self) -> None:
-        mutant = Mutant(file="src/math.cpp", line=4, column=13, offset=0, operator="ror", original="<", replacement="<=")
+        mutant = Mutant(
+            file="src/math.cpp", line=4, column=13, offset=0, operator="ror", original="<", replacement="<="
+        )
         self.assertEqual(
             source_excerpt(mutant, SOURCE),
             [
@@ -131,7 +133,9 @@ class SourceExcerptTest(unittest.TestCase):
         )
 
     def test_multi_character_operators_are_underlined(self) -> None:
-        mutant = Mutant(file="src/math.cpp", line=1, column=1, offset=0, operator="lcr", original="&&", replacement="||")
+        mutant = Mutant(
+            file="src/math.cpp", line=1, column=1, offset=0, operator="lcr", original="&&", replacement="||"
+        )
         self.assertEqual(source_excerpt(mutant, "&& x\n"), ["    1 | && x", "      | ^~", "      | ||"])
 
     def test_lines_past_the_end_of_the_source_give_no_excerpt(self) -> None:

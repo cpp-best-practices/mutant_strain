@@ -158,7 +158,9 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("▸ Files", stdout)
         self.assertRegex(stdout, r"src/sample\.cpp\s+40\.0%\s+8 mutants\s+2 detected\s+3 survived")
         self.assertIn("summary.md", stdout)
-        self.assertIn("**Mutation score: 40.0%** ❌ below the 50% threshold", (self.report_dir / "summary.md").read_text())
+        self.assertIn(
+            "**Mutation score: 40.0%** ❌ below the 50% threshold", (self.report_dir / "summary.md").read_text()
+        )
         self.assertIn("clamp_to_zero", (self.report_dir / "index.html").read_text())
         self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
         self.assertTrue((self.report_dir / "events.jsonl").is_file())
