@@ -1,6 +1,7 @@
 """The per-test strategy: baseline, generate mutants on covered lines, mutate, rebuild, run, restore."""
 
 import json
+import os
 import shlex
 import time
 from collections.abc import Mapping, Sequence
@@ -116,6 +117,15 @@ def cmake_source_dir(build_dir: Path) -> Path:
     return Path(source_dir).resolve()
 
 
+def short_path(path: Path) -> str:
+    """`path` relative to the working directory when that is shorter, for titles that have little room."""
+    try:
+        relative = os.path.relpath(path)
+    except ValueError:
+        return str(path)
+    return min(relative, str(path), key=len)
+
+
 @dataclass(frozen=True, slots=True)
 class PlannedMutant:
     source: SourceFile
@@ -166,7 +176,7 @@ class Runner:
         console.field("reports", str(self.options.report_dir), 7)
 
     def build(self, target: str | None = None) -> bool:
-        self.console.build_started(shlex.join(build_command(self.build_dir, target)))
+        self.console.build_started(shlex.join(build_command(Path(short_path(self.build_dir)), target)))
         return build(self.build_dir, target, self.console.build_output)
 
     def build_or_fail(self, activity: str, success: str, failure: str) -> None:
