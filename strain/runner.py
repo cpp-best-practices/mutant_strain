@@ -144,6 +144,7 @@ class Runner:
         self.database = CompilationDatabase([])
         self.since: dict[str, set[int]] | None = None
         self.killed: set[str] = set()
+        self.results: list[MutantResult] = []
         self.engine = Engine.LEXER
         self.sites: dict[str, list[OperatorSite]] = {}
         self.test_targets: dict[str, Target] = {}
@@ -421,6 +422,7 @@ class Runner:
 
     def record(self, result: MutantResult, events: EventLog) -> None:
         mutant = result.mutant
+        self.results.append(result)
         if result.state in DETECTED_STATES:
             self.killed.add(mutant.id)
         events.emit(
@@ -492,16 +494,13 @@ class Runner:
             return "   " + self.console.paint(f"✗ below --threshold {threshold:g}%", BOLD + RED)
         return "   " + self.console.paint(f"✓ meets --threshold {threshold:g}%", DIM)
 
-    def run_tests(self, tests: Sequence[str], events: EventLog) -> list[MutantResult]:
+    def run_tests(self, tests: Sequence[str], events: EventLog) -> None:
         width = max(len(test) for test in tests)
-        results: list[MutantResult] = []
         for number, test in enumerate(tests, start=1):
             self.console.heading(f"Test {number}/{len(tests)}: {test}")
             self.console.test_started(test, number, len(tests))
             test_results = self.run_test(test, events)
-            results += test_results
             self.console.line(f"  {self.console.paint(summary_line(test, test_results, width), BOLD)}")
-        return results
 
     def require_mutants(self, combined: Sequence[CombinedResult]) -> None:
         """Without --since, a run that mutated nothing tested nothing, so it must not pass."""
@@ -511,6 +510,17 @@ class Runner:
             "no mutant was generated for any test, so nothing was mutation tested; check that the tests pass, that "
             f"the build writes coverage data and that {CONFIG_FILE} does not exclude every source"
         )
+
+    def report(self, combined: Sequence[CombinedResult], events: EventLog, ending: str, start: float) -> float | None:
+        """Writes the reports and shows the results so far, whether the run `ending` finished or was interrupted."""
+        score = mutation_score(entry.state for entry in combined)
+        report_path = self.write_report(combined)
+        events.emit(ending, score=score)
+        self.show_survivors(combined)
+        self.show_action_items(combined)
+        self.show_summary(combined, score, report_path)
+        self.console.line(f"\n{self.console.paint(f'{ending} after {time.monotonic() - start:.1f}s', DIM)}")
+        return score
 
     def run(self) -> int:
         start = time.monotonic()
@@ -527,15 +537,14 @@ class Runner:
         ) as events:
             if self.options.resume:
                 self.console.step(f"resuming: {plural(len(events.previous_results()), 'earlier result')} reused")
-            combined = combine(self.run_tests(tests, events))
+            try:
+                self.run_tests(tests, events)
+            except KeyboardInterrupt:
+                self.report(combine(self.results), events, "interrupted", start)
+                raise
+            combined = combine(self.results)
             self.require_mutants(combined)
-            score = mutation_score(entry.state for entry in combined)
-            report_path = self.write_report(combined)
-            events.emit("finished", score=score)
-        self.show_survivors(combined)
-        self.show_action_items(combined)
-        self.show_summary(combined, score, report_path)
-        self.console.line(f"\n{self.console.paint(f'finished in {time.monotonic() - start:.1f}s', DIM)}")
+            score = self.report(combined, events, "finished", start)
         self.console.run_finished()
         threshold = self.options.threshold
         return 1 if threshold is not None and score is not None and score * 100 < threshold else 0

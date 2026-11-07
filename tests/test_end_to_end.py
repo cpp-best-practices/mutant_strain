@@ -61,6 +61,19 @@ class RecordingConsole(Console):
         self.finished_runs += 1
 
 
+class InterruptingConsole(RecordingConsole):
+    """Presses Ctrl-C once `limit` mutants have been evaluated."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self.limit = limit
+
+    def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
+        super().mutant_evaluated(result, source, line)
+        if len(self.evaluated) == self.limit:
+            raise KeyboardInterrupt
+
+
 PARSED_STATES = [
     (3, "aor", "-", "killed"),
     (7, "ror", "<=", "survived"),
@@ -346,6 +359,32 @@ class EndToEndTest(unittest.TestCase):
         clamp = next(line for result, line in survivors if result.mutant.line == 7)
         self.assertEqual(clamp.count, 1)
         self.assertEqual(console.finished_runs, 1)
+
+    def test_interrupted_run_still_writes_the_reports(self) -> None:
+        configure_project(self.root, self.build_dir)
+        runner = Runner(
+            RunOptions(
+                build_dir=self.build_dir, report_dir=self.report_dir, include="^sample_tests$", engine=Engine.LEXER
+            ),
+            io.StringIO(),
+            io.StringIO(),
+        )
+        console = InterruptingConsole(limit=3)
+        runner.console = console
+
+        with self.assertRaises(KeyboardInterrupt):
+            runner.run()
+
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES[:3])
+        events = [json.loads(line) for line in (self.report_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(events[-1]["event"], "interrupted")
+        self.assertEqual(events[-1]["score"], 1 / 3)
+        transcript = console.out.getvalue()
+        self.assertIn("▸ Survivors (2)", transcript)
+        self.assertIn("mutation score 33.3%", transcript)
+        self.assertIn("interrupted after", transcript)
+        self.assertEqual(console.finished_runs, 0)
+        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)
