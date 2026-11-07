@@ -88,6 +88,16 @@ def fit(text: str, width: int) -> str:
     return f"{''.join(kept)}{ELLIPSIS}{reset}"
 
 
+def fit_keeping_end(text: str, end: str, width: int) -> str:
+    """`text` then `end` in exactly `width` visible characters, truncating `text` before `end` loses anything."""
+    if not end:
+        return fit(text, width)
+    end_width = visible_length(end)
+    if end_width >= width:
+        return fit(end, width)
+    return fit(text, width - end_width) + end
+
+
 def code_snippet(source: str, mutant: Mutant, context: int = SNIPPET_CONTEXT) -> list[str]:
     """The lines around `mutant`, with its line shown before (`-`) and after (`+`) the mutation."""
     lines = source.splitlines()
@@ -261,7 +271,11 @@ class Dashboard:
             self.selected = max(0, min(self.selected_survivor(survivors) + steps[key], len(survivors) - 1))
 
     def finish_run(self) -> None:
+        """Ends the run with every mutant in the queue, in its state combined over all tests."""
         self.run_done = True
+        self.test_name = "all tests"
+        self.queue = [QueueEntry(describe_mutant(entry.mutant), entry.state) for entry in self.combined()]
+        self.current = None
         if self.survivors():
             self.view = SURVIVORS_VIEW
 
@@ -283,14 +297,14 @@ class Dashboard:
             hints.append("q quit")
         return self.paint("  ".join(hints), DIM)
 
-    def title(self) -> str:
+    def title(self, width: int) -> str:
+        """The run's position on the left and the key hints on the right, so a narrow terminal never hides `q quit`."""
         parts = [self.paint("strain live", BOLD + CYAN), self.test]
         if self.run_done:
             parts.append("finished")
         elif self.current is not None:
             parts.append(f"mutant {self.current + 1}/{len(self.queue)}")
-        parts.append(self.key_hints())
-        return "  ·  ".join(part for part in parts if part)
+        return fit_keeping_end("  ·  ".join(part for part in parts if part) + "  ", self.key_hints(), width)
 
     def progress(self) -> str:
         done = sum(entry.state not in (PENDING, RUNNING) for entry in self.queue)
@@ -302,12 +316,15 @@ class Dashboard:
         return self.paint(format_score(score), score_style(percent))
 
     def tally(self) -> str:
-        """The progress of the current test, then the totals over every test, counting each mutant once."""
+        """The progress of the current test, the score, then the totals over every test, counting each mutant once.
+
+        The score comes before the counts, so a narrow terminal cuts the counts first.
+        """
         states = [entry.state for entry in self.combined()]
         counts = [
             self.paint(f"{state} {states.count(state)}", STATE_STYLES[state]) for state in MutantState if state in states
         ]
-        return "  ".join([self.progress(), *counts, f"score {self.score(mutation_score(states))}"])
+        return "  ".join([self.progress(), f"score {self.score(mutation_score(states))}", *counts])
 
     def rule(self, title: str, width: int) -> str:
         filler = "─" * max(0, width - len(f"─ {title} "))
@@ -472,7 +489,7 @@ class Dashboard:
         ]
 
     def render(self, width: int, height: int) -> list[str]:
-        header = [self.title(), self.tally()]
+        header = [self.title(width), self.tally()]
         footer = [self.paint(self.status, DIM)]
         body_rows = max(0, height - len(header) - len(footer))
         panels = self.run_panels if self.view == RUN_VIEW else self.survivor_panels
