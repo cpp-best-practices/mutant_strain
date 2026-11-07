@@ -22,6 +22,7 @@ from .build import (
     read_cxx_compiler,
     target_artifacts,
 )
+from .build_cache import BuildFailureCache, cache_path
 from .config import CONFIG_FILE, Config, load_config
 from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, plural
 from .coverage import FileCoverage, GcovCoverage
@@ -89,6 +90,7 @@ class RunOptions:
     since: str | None = None
     skip_killed: bool = False
     strategy: Strategy = Strategy.PER_TEST
+    build_cache: bool = True
     engine: Engine = Engine.AUTO
     safety_nets: Level | None = None
     threshold: float | None = None
@@ -174,6 +176,7 @@ class Runner:
         self.database = CompilationDatabase([])
         self.since: dict[str, set[int]] | None = None
         self.killed: set[str] = set()
+        self.build_failures = BuildFailureCache()
         self.results: list[MutantResult] = []
         self.engine = Engine.LEXER
         self.sites: dict[str, list[OperatorSite]] = {}
@@ -223,12 +226,24 @@ class Runner:
             f"`cmake --build {self.build_dir}` fails before any mutation",
         )
         self.test_targets = self.find_test_targets()
+        self.load_build_cache()
         if self.options.since is not None:
             self.since = git.changed_lines(self.source_dir, self.options.since)
             changed = sum(len(lines) for lines in self.since.values())
             self.console.step(
                 f"--since {self.options.since}: {plural(changed, 'changed line')} in {plural(len(self.since), 'file')}"
             )
+
+    def load_build_cache(self) -> None:
+        """Loads the mutants earlier runs found to break the build at this commit, with this build configuration."""
+        if not self.options.build_cache:
+            self.console.note("--no-build-cache: build failures are remembered for this run only")
+            return
+        compile_database = (self.build_dir / "compile_commands.json").read_bytes()
+        path = cache_path(self.build_dir, git.head_commit(self.source_dir), compile_database)
+        self.build_failures = BuildFailureCache.load(path)
+        known = plural(len(self.build_failures), "mutant")
+        self.console.step(f"build cache: {known} known to break the build at this commit")
 
     def resolve_engine(self) -> Engine:
         try:
@@ -366,16 +381,31 @@ class Runner:
         targets = [self.target_for(test) for test in tests]
         return [None] if None in targets else list(dict.fromkeys(targets))
 
-    def build_mutant(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> Outcome | None:
-        """Compiles the mutated source; returns the compile error outcome when it does not build."""
+    def build_failure(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> str | None:
+        """Compiles the mutated source; returns why it does not build, or None when it does."""
         command = self.database.command_for(planned.source.path)
         self.console.status(f"{label}  checking syntax…")
         if command is not None and not command.passes_syntax_check():
-            return Outcome(MutantState.COMPILE_ERROR, detail="rejected by -fsyntax-only")
+            return "rejected by -fsyntax-only"
         self.console.status(f"{label}  building…")
         if not all(self.build(target) for target in targets):
-            return Outcome(MutantState.COMPILE_ERROR, detail="build failed")
+            return "build failed"
         return None
+
+    def build_mutant(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> Outcome | None:
+        """Compiles the mutated source; returns the compile error outcome, and remembers it, when it does not build."""
+        failure = self.build_failure(planned, targets, label)
+        if failure is None:
+            return None
+        self.build_failures.add(planned.mutant, failure)
+        return Outcome(MutantState.COMPILE_ERROR, detail=failure)
+
+    def known_build_failure(self, planned: PlannedMutant) -> Outcome | None:
+        """The compile error a mutant known to break the build gets without mutating or building anything."""
+        failure = self.build_failures.failure(planned.mutant)
+        return (
+            None if failure is None else Outcome(MutantState.COMPILE_ERROR, detail=f"{failure}, known from the cache")
+        )
 
     def run_mutated(self, test: str, timeout: float, coverage: FileCoverage, line: int, label: str) -> Outcome:
         self.console.status(f"{label}  running {test}…")
@@ -387,6 +417,9 @@ class Runner:
         )
 
     def evaluate(self, test: str, planned: PlannedMutant, timeout: float, label: str) -> Outcome:
+        known = self.known_build_failure(planned)
+        if known is not None:
+            return known
         with self.mutated(planned):
             problem = self.build_mutant(planned, self.targets_for([test]), label)
             if problem is not None:
@@ -613,6 +646,9 @@ class Runner:
     ) -> list[tuple[CoveringTest, Outcome]]:
         """Builds the mutant once, then runs `tests` until one detects it."""
         planned = entry.planned
+        known = self.known_build_failure(planned)
+        if known is not None:
+            return [(test, known) for test in tests]
         with self.mutated(planned):
             problem = self.build_mutant(planned, self.targets_for([test.name for test in tests]), label)
             if problem is not None:

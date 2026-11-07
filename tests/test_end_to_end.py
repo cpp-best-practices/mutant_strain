@@ -311,6 +311,70 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(self.mutant_states(), [(3, "aor", "-", "survived")])
         self.assertEqual([event["test"] for event in self.mutant_events()], ["sample_tests", "other_tests"])
 
+    def test_a_second_run_at_the_same_commit_does_not_rebuild_mutants_known_to_break_the_build(self) -> None:
+        configure_project(self.root, self.build_dir)
+        _, first, _ = self.run_sample_tests("lexer")
+
+        exit_code, second, _ = self.run_sample_tests("lexer")
+
+        self.assertEqual(exit_code, 0, second)
+        self.assertIn("✓ build cache: 0 mutants known to break the build at this commit", first)
+        self.assertNotIn("known from the cache", first)
+        self.assertIn("✓ build cache: 2 mutants known to break the build at this commit", second)
+        self.assertEqual(second.count("rejected by -fsyntax-only, known from the cache"), 2)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+
+    def test_the_per_mutant_strategy_uses_the_build_cache(self) -> None:
+        configure_project(self.root, self.build_dir)
+        self.run_sample_tests("lexer")
+
+        exit_code, stdout, _ = self.run_per_mutant()
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertEqual(stdout.count("rejected by -fsyntax-only, known from the cache"), 2)
+
+    def test_a_new_commit_starts_an_empty_build_cache(self) -> None:
+        configure_project(self.root, self.build_dir)
+        self.run_sample_tests("lexer")
+        run_checked(
+            "git",
+            "-c",
+            "user.name=strain",
+            "-c",
+            "user.email=strain@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "next",
+            cwd=self.root,
+        )
+
+        _, stdout, _ = self.run_sample_tests("lexer")
+
+        self.assertIn("✓ build cache: 0 mutants known to break the build at this commit", stdout)
+
+    def test_no_build_cache_ignores_earlier_runs(self) -> None:
+        configure_project(self.root, self.build_dir)
+        self.run_sample_tests("lexer")
+
+        _, stdout, _ = run_strain(
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^sample_tests$",
+            "--engine",
+            "lexer",
+            "--no-build-cache",
+        )
+
+        self.assertIn("--no-build-cache: build failures are remembered for this run only", stdout)
+        self.assertNotIn("known from the cache", stdout)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+
     def test_json_ui_prints_only_events(self) -> None:
         configure_project(self.root, self.build_dir)
 

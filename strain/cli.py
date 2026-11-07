@@ -34,6 +34,12 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
         help="per-test (rebuild each mutant for each test) or per-mutant (build each mutant once, run until killed)",
     )
     parser.add_argument("--skip-killed", action="store_true", help="skip mutants an earlier test already killed")
+    parser.add_argument(
+        "--no-build-cache",
+        dest="build_cache",
+        action="store_false",
+        help="forget mutants earlier runs at this commit found to break the build, and do not remember new ones",
+    )
 
 
 def _add_backend_arguments(parser: argparse.ArgumentParser) -> None:
@@ -94,6 +100,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         since=arguments.since,
         skip_killed=arguments.skip_killed,
         strategy=arguments.strategy,
+        build_cache=arguments.build_cache,
         engine=arguments.engine,
         safety_nets=arguments.safety_nets,
         threshold=arguments.threshold,

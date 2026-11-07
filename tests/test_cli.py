@@ -55,6 +55,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.since, None)
         self.assertFalse(options.skip_killed)
         self.assertIs(options.strategy, Strategy.PER_TEST)
+        self.assertTrue(options.build_cache)
         self.assertIsNone(options.safety_nets)
         self.assertIsNone(options.threshold)
         self.assertFalse(options.strict)
@@ -87,6 +88,9 @@ class RunOptionsTest(unittest.TestCase):
         for engine in Engine:
             with self.subTest(engine=engine):
                 self.assertIs(parse("--engine", str(engine)).engine, engine)
+
+    def test_no_build_cache(self) -> None:
+        self.assertFalse(parse("--no-build-cache").build_cache)
 
     def test_every_strategy_from_the_readme(self) -> None:
         for strategy in Strategy:
