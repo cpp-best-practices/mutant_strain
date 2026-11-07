@@ -4,6 +4,10 @@
 
 strain changes your code in small ways (`<` becomes `<=`, `&&` becomes `||`) and checks whether your tests notice. Every mutant that survives points at a test that runs the code but doesn't really check it.
 
+![The strain run --ui live dashboard in an 80x24 terminal, listing three survivors and showing the selected one as a diff with a hint](docs/images/dashboard-80x24.png)
+
+*`strain run --ui live` on `tests/fixtures/sample_project` after the run, with the second survivor selected.*
+
 > **Status:** design stage, not yet usable.
 > Design doc: <!-- TODO(claude): link the design doc -->
 
