@@ -100,9 +100,13 @@ class Mutant:
         return self.column + len(self.original)
 
     @property
+    def key(self) -> str:
+        """Everything that identifies this mutant; `id` is a short hash of it."""
+        return f"{self.file}:{self.line}:{self.column}:{self.original}:{self.replacement}"
+
+    @property
     def id(self) -> str:
-        key = f"{self.file}:{self.line}:{self.column}:{self.original}:{self.replacement}"
-        return hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:8]
+        return hashlib.sha1(self.key.encode(), usedforsecurity=False).hexdigest()[:8]
 
 
 def _is_operand_end(token: Token) -> bool:

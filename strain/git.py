@@ -1,4 +1,4 @@
-"""The git queries strain needs: a clean working tree and the lines changed since a ref."""
+"""The git queries strain needs: a clean working tree, the commit it is at and the lines changed since a ref."""
 
 import re
 import subprocess
@@ -13,6 +13,10 @@ def _git(root: Path, *arguments: str) -> str:
 
 def is_clean(root: Path) -> bool:
     return _git(root, "status", "--porcelain", "--untracked-files=no") == ""
+
+
+def head_commit(root: Path) -> str:
+    return _git(root, "rev-parse", "HEAD").strip()
 
 
 def parse_changed_lines(diff: str) -> dict[str, set[int]]:

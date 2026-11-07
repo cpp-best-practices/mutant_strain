@@ -61,6 +61,19 @@ class RecordingConsole(Console):
         self.finished_runs += 1
 
 
+class InterruptingConsole(RecordingConsole):
+    """Presses Ctrl-C once `limit` mutants have been evaluated."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__()
+        self.limit = limit
+
+    def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
+        super().mutant_evaluated(result, source, line)
+        if len(self.evaluated) == self.limit:
+            raise KeyboardInterrupt
+
+
 PARSED_STATES = [
     (3, "aor", "-", "killed"),
     (7, "ror", "<=", "survived"),
@@ -265,6 +278,113 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("test other_tests kills nothing", stdout)
         self.assertEqual(self.mutant_states()[0], (3, "aor", "-", "killed"))
 
+    def mutant_events(self) -> list[dict[str, object]]:
+        lines = (self.report_dir / "events.jsonl").read_text().splitlines()
+        return [event for event in map(json.loads, lines) if event["event"] == "mutant"]
+
+    def run_per_mutant(self) -> tuple[int, str, str]:
+        return run_strain(
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "--engine",
+            "lexer",
+            "--strategy",
+            "per-mutant",
+        )
+
+    def test_per_mutant_strategy_builds_each_mutant_once_and_stops_at_the_first_kill(self) -> None:
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = self.run_per_mutant()
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+        self.assertIn("· src/sample.cpp: 8 mutants on 6 lines", stdout)
+        self.assertIn("[1/8] killed", stdout)
+        self.assertIn("sample_tests   score 40.0%   killed 1  sanitizer 1  timeout 0  survived 3", stdout)
+        self.assertIn("✓ sources restored and rebuilt", stdout)
+        add = [event["test"] for event in self.mutant_events() if event["line"] == 3]
+        self.assertEqual(add, ["sample_tests"])
+        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+
+    def test_per_mutant_strategy_runs_every_covering_test_of_a_survivor(self) -> None:
+        (self.root / "tests" / "sample_tests.cpp").write_text(
+            '#include "sample.hpp"\n\nint main() { static_cast<void>(add(1, 1)); return 0; }\n'
+        )
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = self.run_per_mutant()
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertEqual(self.mutant_states(), [(3, "aor", "-", "survived")])
+        self.assertEqual([event["test"] for event in self.mutant_events()], ["sample_tests", "other_tests"])
+
+    def test_a_second_run_at_the_same_commit_does_not_rebuild_mutants_known_to_break_the_build(self) -> None:
+        configure_project(self.root, self.build_dir)
+        _, first, _ = self.run_sample_tests("lexer")
+
+        exit_code, second, _ = self.run_sample_tests("lexer")
+
+        self.assertEqual(exit_code, 0, second)
+        self.assertIn("✓ build cache: 0 mutants known to break the build at this commit", first)
+        self.assertNotIn("known from the cache", first)
+        self.assertIn("✓ build cache: 2 mutants known to break the build at this commit", second)
+        self.assertEqual(second.count("rejected by -fsyntax-only, known from the cache"), 2)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+
+    def test_the_per_mutant_strategy_uses_the_build_cache(self) -> None:
+        configure_project(self.root, self.build_dir)
+        self.run_sample_tests("lexer")
+
+        exit_code, stdout, _ = self.run_per_mutant()
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertEqual(stdout.count("rejected by -fsyntax-only, known from the cache"), 2)
+
+    def test_a_new_commit_starts_an_empty_build_cache(self) -> None:
+        configure_project(self.root, self.build_dir)
+        self.run_sample_tests("lexer")
+        run_checked(
+            "git",
+            "-c",
+            "user.name=strain",
+            "-c",
+            "user.email=strain@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "next",
+            cwd=self.root,
+        )
+
+        _, stdout, _ = self.run_sample_tests("lexer")
+
+        self.assertIn("✓ build cache: 0 mutants known to break the build at this commit", stdout)
+
+    def test_no_build_cache_ignores_earlier_runs(self) -> None:
+        configure_project(self.root, self.build_dir)
+        self.run_sample_tests("lexer")
+
+        _, stdout, _ = run_strain(
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^sample_tests$",
+            "--engine",
+            "lexer",
+            "--no-build-cache",
+        )
+
+        self.assertIn("--no-build-cache: build failures are remembered for this run only", stdout)
+        self.assertNotIn("known from the cache", stdout)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+
     def test_json_ui_prints_only_events(self) -> None:
         configure_project(self.root, self.build_dir)
 
@@ -356,6 +476,32 @@ class EndToEndTest(unittest.TestCase):
         clamp = next(line for result, line in survivors if result.mutant.line == 7)
         self.assertEqual(clamp.count, 1)
         self.assertEqual(console.finished_runs, 1)
+
+    def test_interrupted_run_still_writes_the_reports(self) -> None:
+        configure_project(self.root, self.build_dir)
+        runner = Runner(
+            RunOptions(
+                build_dir=self.build_dir, report_dir=self.report_dir, include="^sample_tests$", engine=Engine.LEXER
+            ),
+            io.StringIO(),
+            io.StringIO(),
+        )
+        console = InterruptingConsole(limit=3)
+        runner.console = console
+
+        with self.assertRaises(KeyboardInterrupt):
+            runner.run()
+
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES[:3])
+        events = [json.loads(line) for line in (self.report_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(events[-1]["event"], "interrupted")
+        self.assertEqual(events[-1]["score"], 1 / 3)
+        transcript = console.out.getvalue()
+        self.assertIn("▸ Survivors (2)", transcript)
+        self.assertIn("mutation score 33.3%", transcript)
+        self.assertIn("interrupted after", transcript)
+        self.assertEqual(console.finished_runs, 0)
+        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)

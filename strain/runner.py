@@ -1,11 +1,13 @@
-"""The per-test strategy: baseline, generate mutants on covered lines, mutate, rebuild, run, restore."""
+"""The strategies: baseline, generate mutants on covered lines, mutate, rebuild, run, restore."""
 
+import enum
 import json
 import os
 import shlex
 import time
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
@@ -21,6 +23,7 @@ from .build import (
     read_cxx_compiler,
     target_artifacts,
 )
+from .build_cache import BuildFailureCache, cache_path
 from .config import CONFIG_FILE, Config, load_config
 from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, plural, score_style
 from .coverage import FileCoverage, GcovCoverage
@@ -85,6 +88,13 @@ class StrainError(Exception):
     """A problem that stops the run before or between tests."""
 
 
+class Strategy(enum.StrEnum):
+    """per-test builds every mutant once per test; per-mutant builds it once and runs its tests until one kills it."""
+
+    PER_TEST = "per-test"
+    PER_MUTANT = "per-mutant"
+
+
 @dataclass(frozen=True, slots=True)
 class RunOptions:
     build_dir: Path = Path(".")
@@ -92,6 +102,8 @@ class RunOptions:
     exclude: str | None = None
     since: str | None = None
     skip_killed: bool = False
+    strategy: Strategy = Strategy.PER_TEST
+    build_cache: bool = True
     engine: Engine = Engine.AUTO
     safety_nets: Level | None = None
     threshold: float | None = None
@@ -137,6 +149,26 @@ class PlannedMutant:
 
 
 @dataclass(frozen=True, slots=True)
+class BaselinedTest:
+    name: str
+    timeout: float
+    sources: list[SourceFile]
+
+
+@dataclass(frozen=True, slots=True)
+class CoveringTest:
+    name: str
+    timeout: float
+    source: SourceFile
+
+
+@dataclass(slots=True)
+class CoveredMutant:
+    planned: PlannedMutant
+    tests: list[CoveringTest] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
 class Outcome:
     state: MutantState
     survivor: SurvivorKind | None = None
@@ -166,6 +198,8 @@ class Runner:
         self.database = CompilationDatabase([])
         self.since: dict[str, set[int]] | None = None
         self.killed: set[str] = set()
+        self.build_failures = BuildFailureCache()
+        self.results: list[MutantResult] = []
         self.engine = Engine.LEXER
         self.sites: dict[str, list[OperatorSite]] = {}
         self.test_targets: dict[str, Target] = {}
@@ -214,12 +248,24 @@ class Runner:
             f"`cmake --build {self.build_dir}` fails before any mutation",
         )
         self.test_targets = self.find_test_targets()
+        self.load_build_cache()
         if self.options.since is not None:
             self.since = git.changed_lines(self.source_dir, self.options.since)
             changed = sum(len(lines) for lines in self.since.values())
             self.console.step(
                 f"--since {self.options.since}: {plural(changed, 'changed line')} in {plural(len(self.since), 'file')}"
             )
+
+    def load_build_cache(self) -> None:
+        """Loads the mutants earlier runs found to break the build at this commit, with this build configuration."""
+        if not self.options.build_cache:
+            self.console.note("--no-build-cache: build failures are remembered for this run only")
+            return
+        compile_database = (self.build_dir / "compile_commands.json").read_bytes()
+        path = cache_path(self.build_dir, git.head_commit(self.source_dir), compile_database)
+        self.build_failures = BuildFailureCache.load(path)
+        known = plural(len(self.build_failures), "mutant")
+        self.console.step(f"build cache: {known} known to break the build at this commit")
 
     def resolve_engine(self) -> Engine:
         try:
@@ -344,25 +390,63 @@ class Runner:
             self.console.note("no mutants on the lines this test executes")
         return planned
 
-    def evaluate(self, test: str, planned: PlannedMutant, timeout: float, label: str) -> Outcome:
-        source, mutant = planned.source, planned.mutant
-        mutated = apply_mutant(source.text, mutant).encode(SOURCE_ENCODING, SOURCE_ERRORS)
+    @contextmanager
+    def mutated(self, planned: PlannedMutant) -> Iterator[None]:
+        source = planned.source
+        mutated = apply_mutant(source.text, planned.mutant).encode(SOURCE_ENCODING, SOURCE_ERRORS)
         self.build_is_mutated = True
         with self.journal.mutated(source.path, mutated):
-            command = self.database.command_for(source.path)
-            self.console.status(f"{label}  checking syntax…")
-            if command is not None and not command.passes_syntax_check():
-                return Outcome(MutantState.COMPILE_ERROR, detail="rejected by -fsyntax-only")
-            self.console.status(f"{label}  building…")
-            if not self.build(self.target_for(test)):
-                return Outcome(MutantState.COMPILE_ERROR, detail="build failed")
-            self.console.status(f"{label}  running {test}…")
-            run = ctest.run_test(self.build_dir, test, timeout)
+            yield
+
+    def targets_for(self, tests: Sequence[str]) -> list[str | None]:
+        """The targets to rebuild for `tests`, or just None to rebuild everything when one of them has no target."""
+        targets = [self.target_for(test) for test in tests]
+        return [None] if None in targets else list(dict.fromkeys(targets))
+
+    def build_failure(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> str | None:
+        """Compiles the mutated source; returns why it does not build, or None when it does."""
+        command = self.database.command_for(planned.source.path)
+        self.console.status(f"{label}  checking syntax…")
+        if command is not None and not command.passes_syntax_check():
+            return "rejected by -fsyntax-only"
+        self.console.status(f"{label}  building…")
+        if not all(self.build(target) for target in targets):
+            return "build failed"
+        return None
+
+    def build_mutant(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> Outcome | None:
+        """Compiles the mutated source; returns the compile error outcome, and remembers it, when it does not build."""
+        failure = self.build_failure(planned, targets, label)
+        if failure is None:
+            return None
+        self.build_failures.add(planned.mutant, failure)
+        return Outcome(MutantState.COMPILE_ERROR, detail=failure)
+
+    def known_build_failure(self, planned: PlannedMutant) -> Outcome | None:
+        """The compile error a mutant known to break the build gets without mutating or building anything."""
+        failure = self.build_failures.failure(planned.mutant)
+        return (
+            None if failure is None else Outcome(MutantState.COMPILE_ERROR, detail=f"{failure}, known from the cache")
+        )
+
+    def run_mutated(self, test: str, timeout: float, coverage: FileCoverage, line: int, label: str) -> Outcome:
+        self.console.status(f"{label}  running {test}…")
+        run = ctest.run_test(self.build_dir, test, timeout)
         state = classify_run(run)
-        survivor = survivor_kind(source.coverage, mutant.line) if state is MutantState.SURVIVED else None
+        survivor = survivor_kind(coverage, line) if state is MutantState.SURVIVED else None
         return Outcome(
             state, survivor, f"{run.duration:.2f}s" if survivor is None else f"{run.duration:.2f}s, {survivor}"
         )
+
+    def evaluate(self, test: str, planned: PlannedMutant, timeout: float, label: str) -> Outcome:
+        known = self.known_build_failure(planned)
+        if known is not None:
+            return known
+        with self.mutated(planned):
+            problem = self.build_mutant(planned, self.targets_for([test]), label)
+            if problem is not None:
+                return problem
+            return self.run_mutated(test, timeout, planned.source.coverage, planned.mutant.line, label)
 
     def run_baseline(self, test: str, events: EventLog) -> float | None:
         self.coverage.reset()
@@ -383,16 +467,26 @@ class Runner:
         self, test: str, planned: PlannedMutant, timeout: float, events: EventLog, label: str
     ) -> Outcome | None:
         mutant = planned.mutant
-        previous = events.previous_results().get((test, mutant.id))
+        previous = self.previous_outcome(test, mutant, events)
         if previous is not None:
-            return Outcome(*previous, detail="from the interrupted run")
-        if mutant.line in planned.suppressed:
-            return Outcome(MutantState.IGNORED, detail="line suppressed by a mutate-off comment or arid pattern")
-        if mutant.id in self.config.ignored_mutants:
-            return Outcome(MutantState.IGNORED, detail=f"ignored in {CONFIG_FILE}")
+            return previous
+        ignored = self.ignored_outcome(planned)
+        if ignored is not None:
+            return ignored
         if self.options.skip_killed and mutant.id in self.killed:
             return None
         return self.evaluate(test, planned, timeout, label)
+
+    def previous_outcome(self, test: str, mutant: Mutant, events: EventLog) -> Outcome | None:
+        previous = events.previous_results().get((test, mutant.id))
+        return None if previous is None else Outcome(*previous, detail="from the interrupted run")
+
+    def ignored_outcome(self, planned: PlannedMutant) -> Outcome | None:
+        if planned.mutant.line in planned.suppressed:
+            return Outcome(MutantState.IGNORED, detail="line suppressed by a mutate-off comment or arid pattern")
+        if planned.mutant.id in self.config.ignored_mutants:
+            return Outcome(MutantState.IGNORED, detail=f"ignored in {CONFIG_FILE}")
+        return None
 
     def run_test(self, test: str, events: EventLog) -> list[MutantResult]:
         timeout = self.run_baseline(test, events)
@@ -443,6 +537,7 @@ class Runner:
 
     def record(self, result: MutantResult, events: EventLog) -> None:
         mutant = result.mutant
+        self.results.append(result)
         if result.state in DETECTED_STATES:
             self.killed.add(mutant.id)
         events.emit(
@@ -544,16 +639,131 @@ class Runner:
             return "   " + self.console.paint(f"✗ below --threshold {threshold:g}%", BOLD + RED)
         return "   " + self.console.paint(f"✓ meets --threshold {threshold:g}%", DIM)
 
-    def run_tests(self, tests: Sequence[str], events: EventLog) -> list[MutantResult]:
+    def run_tests(self, tests: Sequence[str], events: EventLog) -> None:
         width = max(len(test) for test in tests)
-        results: list[MutantResult] = []
         for number, test in enumerate(tests, start=1):
             self.console.heading(f"Test {number}/{len(tests)}: {test}")
             self.console.test_started(test, number, len(tests))
             test_results = self.run_test(test, events)
-            results += test_results
             self.console.line(f"  {self.console.paint(summary_line(test, test_results, width), BOLD)}")
+
+    def baseline_tests(self, tests: Sequence[str], events: EventLog) -> list[BaselinedTest]:
+        baselined: list[BaselinedTest] = []
+        for number, test in enumerate(tests, start=1):
+            self.console.heading(f"Baseline {number}/{len(tests)}: {test}")
+            self.console.test_started(test, number, len(tests))
+            timeout = self.run_baseline(test, events)
+            if timeout is None:
+                continue
+            coverage = self.coverage.collect()
+            self.verify_coverage_data(test, coverage)
+            baselined.append(BaselinedTest(test, timeout, self.source_files(coverage, self.test_code(test))))
+        return baselined
+
+    def cover_mutants(self, tests: Sequence[BaselinedTest]) -> list[CoveredMutant]:
+        """Every mutant on a line some test executes, with the tests that execute it in the order they were selected."""
+        covered: dict[str, CoveredMutant] = {}
+        for test in tests:
+            for source in test.sources:
+                suppressed = frozenset(suppressed_lines(source.text, self.config.arid))
+                for mutant in self.mutants_for(source):
+                    entry = covered.setdefault(mutant.id, CoveredMutant(PlannedMutant(source, suppressed, mutant)))
+                    entry.tests.append(CoveringTest(test.name, test.timeout, source))
+        return sorted(covered.values(), key=lambda entry: (entry.planned.mutant.file, entry.planned.mutant.offset))
+
+    def plan_covered_mutants(self, covered: Sequence[CoveredMutant]) -> None:
+        self.console.heading("Mutants")
+        by_file: dict[str, list[Mutant]] = {}
+        for entry in covered:
+            by_file.setdefault(entry.planned.mutant.file, []).append(entry.planned.mutant)
+        for file, mutants in by_file.items():
+            lines = {mutant.line for mutant in mutants}
+            self.console.note(f"{file}: {plural(len(mutants), 'mutant')} on {plural(len(lines), 'line')}")
+        if not covered:
+            self.console.note("no mutants on the lines the tests execute")
+        self.console.plan([entry.planned.mutant for entry in covered])
+
+    def previous_outcomes(self, entry: CoveredMutant, events: EventLog) -> list[tuple[CoveringTest, Outcome]]:
+        """The outcomes an interrupted run recorded for `entry`, up to the first test it did not get to."""
+        outcomes: list[tuple[CoveringTest, Outcome]] = []
+        for test in entry.tests:
+            previous = self.previous_outcome(test.name, entry.planned.mutant, events)
+            if previous is None:
+                break
+            outcomes.append((test, previous))
+        return outcomes
+
+    def run_covering_tests(
+        self, entry: CoveredMutant, tests: Sequence[CoveringTest], label: str
+    ) -> list[tuple[CoveringTest, Outcome]]:
+        """Builds the mutant once, then runs `tests` until one detects it."""
+        planned = entry.planned
+        known = self.known_build_failure(planned)
+        if known is not None:
+            return [(test, known) for test in tests]
+        with self.mutated(planned):
+            problem = self.build_mutant(planned, self.targets_for([test.name for test in tests]), label)
+            if problem is not None:
+                return [(test, problem) for test in tests]
+            outcomes: list[tuple[CoveringTest, Outcome]] = []
+            for test in tests:
+                outcome = self.run_mutated(test.name, test.timeout, test.source.coverage, planned.mutant.line, label)
+                outcomes.append((test, outcome))
+                if outcome.state in DETECTED_STATES:
+                    break
+            return outcomes
+
+    def covered_outcomes(
+        self, entry: CoveredMutant, events: EventLog, label: str
+    ) -> list[tuple[CoveringTest, Outcome]]:
+        ignored = self.ignored_outcome(entry.planned)
+        if ignored is not None:
+            return [(test, ignored) for test in entry.tests]
+        outcomes = self.previous_outcomes(entry, events)
+        if any(outcome.state in DETECTED_STATES for _, outcome in outcomes) or len(outcomes) == len(entry.tests):
+            return outcomes
+        return outcomes + self.run_covering_tests(entry, entry.tests[len(outcomes) :], label)
+
+    def evaluate_covered(self, entry: CoveredMutant, events: EventLog, progress: str) -> list[MutantResult]:
+        mutant = entry.planned.mutant
+        label = f"  {progress} {describe_mutant(mutant)}"
+        results: list[MutantResult] = []
+        for test, outcome in self.covered_outcomes(entry, events, label):
+            function = test.source.coverage.function_at(mutant.line)
+            results.append(MutantResult(mutant, test.name, outcome.state, outcome.survivor, function))
+            self.record(results[-1], events)
+            self.console.mutant_evaluated(results[-1], test.source.text, test.source.coverage.lines.get(mutant.line))
+            self.show_mutant(progress, mutant, outcome.state, f"{test.name}: {outcome.detail}")
         return results
+
+    def run_mutants(self, tests: Sequence[str], events: EventLog) -> None:
+        """The per-mutant strategy: baseline every test, then build each mutant once for all the tests covering it."""
+        baselined = self.baseline_tests(tests, events)
+        covered = self.cover_mutants(baselined)
+        self.plan_covered_mutants(covered)
+        width = len(str(len(covered)))
+        results: list[MutantResult] = []
+        for number, entry in enumerate(covered, start=1):
+            self.console.mutant_started(number - 1, entry.planned.source.text, entry.planned.mutant)
+            mutant_results = self.evaluate_covered(entry, events, f"[{number:>{width}}/{len(covered)}]")
+            results += mutant_results
+            self.console.mutant_finished(number - 1, combine(mutant_results)[0].state)
+        self.rebuild_if_mutated()
+        self.show_test_summaries([test.name for test in baselined], results)
+
+    def show_test_summaries(self, tests: Sequence[str], results: Sequence[MutantResult]) -> None:
+        if not tests:
+            return
+        width = max(len(test) for test in tests)
+        for test in tests:
+            test_results = [result for result in results if result.test == test]
+            self.console.line(f"  {self.console.paint(summary_line(test, test_results, width), BOLD)}")
+
+    def run_strategy(self, tests: Sequence[str], events: EventLog) -> None:
+        if self.options.strategy is Strategy.PER_MUTANT:
+            self.run_mutants(tests, events)
+        else:
+            self.run_tests(tests, events)
 
     def require_mutants(self, combined: Sequence[CombinedResult]) -> None:
         """Without --since, a run that mutated nothing tested nothing, so it must not pass."""
@@ -563,6 +773,19 @@ class Runner:
             "no mutant was generated for any test, so nothing was mutation tested; check that the tests pass, that "
             f"the build writes coverage data and that {CONFIG_FILE} does not exclude every source"
         )
+
+    def report(self, combined: Sequence[CombinedResult], events: EventLog, ending: str, start: float) -> float | None:
+        """Writes the reports and shows the results so far, whether the run `ending` finished or was interrupted."""
+        score = mutation_score(entry.state for entry in combined)
+        sources = self.read_sources(combined)
+        self.write_reports(combined, sources)
+        events.emit(ending, score=score)
+        self.show_survivors(combined, sources)
+        self.show_action_items(combined)
+        self.show_files(combined)
+        self.show_summary(combined, score)
+        self.console.line(f"\n{self.console.paint(f'{ending} after {time.monotonic() - start:.1f}s', DIM)}")
+        return score
 
     def run(self) -> int:
         start = time.monotonic()
@@ -579,17 +802,14 @@ class Runner:
         ) as events:
             if self.options.resume:
                 self.console.step(f"resuming: {plural(len(events.previous_results()), 'earlier result')} reused")
-            combined = combine(self.run_tests(tests, events))
+            try:
+                self.run_strategy(tests, events)
+            except KeyboardInterrupt:
+                self.report(combine(self.results), events, "interrupted", start)
+                raise
+            combined = combine(self.results)
             self.require_mutants(combined)
-            score = mutation_score(entry.state for entry in combined)
-            sources = self.read_sources(combined)
-            self.write_reports(combined, sources)
-            events.emit("finished", score=score)
-        self.show_survivors(combined, sources)
-        self.show_action_items(combined)
-        self.show_files(combined)
-        self.show_summary(combined, score)
-        self.console.line(f"\n{self.console.paint(f'finished in {time.monotonic() - start:.1f}s', DIM)}")
+            score = self.report(combined, events, "finished", start)
         self.console.run_finished()
         threshold = self.options.threshold
         return 1 if threshold is not None and score is not None and score * 100 < threshold else 0

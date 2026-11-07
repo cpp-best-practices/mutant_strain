@@ -93,12 +93,20 @@ For each selected test:
 2. **Generate mutants** on the lines this test executed, in a fixed, reproducible order.
 3. For each mutant:
    1. Mutate the source, with the original saved to a journal first.
-   2. Reject it early if `-fsyntax-only` fails.
+   2. Reject it early if `-fsyntax-only` fails, or without touching the source if it is [known to break the build](#build-cache).
    3. Rebuild incrementally with `cmake --build`.
    4. Run the test and classify the result.
    5. Restore the file, always, even on Ctrl-C.
 
 Interrupted runs continue with `--resume`.
+
+### Build cache
+
+A mutant that doesn't compile is a `compile_error` for every test, so strain builds it only once:
+
+- Later tests in the same run, and later runs, report it straight away, with no mutation and no rebuild.
+- The cache lives in `<build-dir>/strain-cache/`, one file per commit and compilation database. A new commit or a reconfigured build starts with an empty cache.
+- `--no-build-cache` ignores the saved cache and doesn't save to it. Within a run, failures are still remembered.
 
 ## Result states
 
@@ -144,6 +152,7 @@ strain run --safety-nets=warn
 | `--since <ref>` | | Mutate only lines changed since a git ref |
 | `--strategy` | `per-test` | `per-test` or `per-mutant` |
 | `--skip-killed` | off | Skip mutants an earlier test already killed |
+| `--no-build-cache` | off | Don't reuse or save the [build cache](#build-cache) |
 | `--engine` | `auto` | `cppcheck`, `tree-sitter`, `lexer` |
 | `--coverage` | `auto` | `gcov`, `llvm-cov`, `lcov`, `gcovr` |
 | `--ui` | `auto` | `live`, `log`, `json` |
