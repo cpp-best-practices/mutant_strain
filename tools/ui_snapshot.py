@@ -5,7 +5,7 @@
 
 Frames go to `ui-snapshots/` by default: `frame-NNN.txt` every `--interval` seconds, and
 `key-NN-<key>.txt` after each key, each with a matching `.png` when Pillow is installed.
-The keys are sent once the run has finished, which is when the title shows `q quit`.
+The keys are sent once the run has finished, which is when the title shows `finished`.
 """
 
 import argparse
@@ -24,7 +24,7 @@ from pathlib import Path
 import pyte
 
 KEYS = {"up": "\033[A", "down": "\033[B", "pageup": "\033[5~", "pagedown": "\033[6~", "tab": "\t"}
-FINISHED_MARKER = "q quit"
+FINISHED_MARKER = "·  finished"
 READ_SIZE = 65536
 SETTLE_SECONDS = 0.5
 CELL_WIDTH = 9
@@ -127,6 +127,12 @@ def pump(descriptor: int, stream: pyte.ByteStream, seconds: float) -> bool:
     return True
 
 
+def parse_arguments(parser: argparse.ArgumentParser, argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    """Parses our own options, which may follow the project, and returns what comes after `--` for `strain run`."""
+    separator = argv.index("--") if "--" in argv else len(argv)
+    return parser.parse_args(argv[:separator]), argv[separator + 1 :]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("project", type=Path)
@@ -135,13 +141,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=1.0, help="seconds between frames during the run")
     parser.add_argument("--out", type=Path, default=Path("ui-snapshots"))
     parser.add_argument("--timeout", type=float, default=600.0)
-    parser.add_argument("strain_args", nargs=argparse.REMAINDER, help="passed to `strain run` after `--`")
-    options = parser.parse_args(argv)
+    options, extra = parse_arguments(parser, sys.argv[1:] if argv is None else list(argv))
     columns, lines = options.size
     options.out.mkdir(parents=True, exist_ok=True)
     screen = pyte.Screen(columns, lines)
     stream = pyte.ByteStream(screen)
-    extra = [argument for argument in options.strain_args if argument != "--"]
     pid, descriptor = spawn(options.project.resolve(), columns, lines, extra)
     deadline = time.monotonic() + options.timeout
     frame = 0
@@ -151,18 +155,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         save_frame(screen, options.out, f"frame-{frame:03}")
         frame += 1
     keys = [key for key in options.keys.split(",") if key]
+    sent = 0
     for number, key in enumerate(keys, start=1):
         if not running:
             break
         os.write(descriptor, KEYS.get(key, key).encode())
         running = pump(descriptor, stream, SETTLE_SECONDS)
         save_frame(screen, options.out, f"key-{number:02}-{key}")
+        sent = number
     if running:
         pump(descriptor, stream, SETTLE_SECONDS)
         os.kill(pid, signal.SIGTERM)
     _, status = os.waitpid(pid, 0)
     os.close(descriptor)
-    print(f"saved {frame} run frames and {len(keys)} key frames to {options.out}")
+    print(f"saved {frame} run frames and {sent} key frames to {options.out}")
     return os.waitstatus_to_exitcode(status)
 
 
