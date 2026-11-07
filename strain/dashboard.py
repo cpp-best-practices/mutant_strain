@@ -18,18 +18,21 @@ from .console import (
     GREEN,
     RED,
     RESET,
+    REVERSE,
     STATE_STYLES,
     STATE_WIDTH,
+    YELLOW,
     Console,
     UiMode,
     is_terminal,
     paint,
     plural,
+    score_style,
 )
 from .coverage import LineCoverage
 from .keys import KeyHandler, KeyReader, stdin_key_reader
 from .mutators import Mutant, apply_mutant, describe_mutant
-from .report import action_items, hint
+from .report import FileScore, action_items, file_scores, format_score, hint
 from .results import CombinedResult, MutantResult, MutantState, combine, mutation_score
 
 ALTERNATE_SCREEN = "\033[?1049h\033[?25l"
@@ -40,6 +43,11 @@ ESCAPE_SEQUENCE = re.compile(r"(\033\[[0-9;?]*[A-Za-z])")
 ELLIPSIS = "…"
 TAB_WIDTH = 4
 SNIPPET_CONTEXT = 3
+SNIPPET_SEPARATOR = "│ "
+CHANGE_STYLES = {"-": RED, "+": GREEN}
+PROGRESS_BAR_WIDTH = 20
+# The per-file scores take at most this share of the survivors view.
+FILES_PANEL_SHARE = 4
 BUILD_LOG_LINES = 200
 # Builds can print thousands of lines; redrawing for each one would cost more than the build.
 BUILD_OUTPUT_REFRESH_SECONDS = 0.05
@@ -53,6 +61,7 @@ PAGE_ROWS = 10
 DETAIL_LABEL_WIDTH = 10
 # How often the finished run checks whether the user pressed q.
 QUIT_POLL_SECONDS = 0.1
+EQUIVALENT_HINT = f"equivalent? list it under [ignore] mutants in {CONFIG_FILE}"
 
 TerminalSize = Callable[[], os.terminal_size]
 KeyReaderFactory = Callable[[KeyHandler], KeyReader | None]
@@ -79,6 +88,16 @@ def fit(text: str, width: int) -> str:
     return f"{''.join(kept)}{ELLIPSIS}{reset}"
 
 
+def fit_keeping_end(text: str, end: str, width: int) -> str:
+    """`text` then `end` in exactly `width` visible characters, truncating `text` before `end` loses anything."""
+    if not end:
+        return fit(text, width)
+    end_width = visible_length(end)
+    if end_width >= width:
+        return fit(end, width)
+    return fit(text, width - end_width) + end
+
+
 def code_snippet(source: str, mutant: Mutant, context: int = SNIPPET_CONTEXT) -> list[str]:
     """The lines around `mutant`, with its line shown before (`-`) and after (`+`) the mutation."""
     lines = source.splitlines()
@@ -97,6 +116,17 @@ def code_snippet(source: str, mutant: Mutant, context: int = SNIPPET_CONTEXT) ->
         else:
             snippet.append(numbered(" ", number, lines[number - 1]))
     return snippet
+
+
+def token_offset(source: str, mutant: Mutant) -> int:
+    """Where the mutated token starts in the tab-expanded text of its line."""
+    text = source.splitlines()[mutant.line - 1]
+    return len(text[: mutant.column - 1].expandtabs(TAB_WIDTH))
+
+
+def progress_bar(done: int, total: int, width: int = PROGRESS_BAR_WIDTH) -> str:
+    filled = 0 if total <= 0 else min(width, done * width // total)
+    return "█" * filled + "░" * (width - filled)
 
 
 def window_start(focus: int, count: int, rows: int) -> int:
@@ -152,10 +182,19 @@ def layout(body_rows: int, snippet_rows: int) -> Layout:
     return Layout(snippet, queue, findings, rest - queue - findings)
 
 
-def survivor_layout(body_rows: int, survivors: int) -> tuple[int, int]:
-    """Rows for the survivor list and the details of the selected survivor, titles included."""
-    survivor_list = min(body_rows, max(1, survivors) + 1, max(2, body_rows // 3))
-    return survivor_list, body_rows - survivor_list
+@dataclass(frozen=True, slots=True)
+class SurvivorLayout:
+    survivor_list: int
+    details: int
+    files: int
+
+
+def survivor_layout(body_rows: int, survivors: int, files: int) -> SurvivorLayout:
+    """Rows for the survivor list, the details of the selected survivor and the per-file scores, titles included."""
+    file_rows = 0 if files == 0 else min(files + 1, body_rows // FILES_PANEL_SHARE)
+    rest = body_rows - file_rows
+    survivor_list = min(rest, max(1, survivors) + 1, max(2, rest // 3))
+    return SurvivorLayout(survivor_list, rest - survivor_list, file_rows)
 
 
 class Dashboard:
@@ -169,20 +208,25 @@ class Dashboard:
         self.contexts: dict[str, MutantContext] = {}
         self._combined: list[CombinedResult] | None = None
         self.test = ""
+        self.test_name = ""
         self.queue: list[QueueEntry] = []
         self.current: int | None = None
         self.mutant_title = "waiting for the first mutant"
+        self.mutant: Mutant | None = None
+        self.mutant_offset = 0
         self.snippet: list[str] = []
         self.build_command = ""
         self.build_log: collections.deque[str] = collections.deque(maxlen=BUILD_LOG_LINES)
         self.status = ""
-        self.finished: list[MutantState] = []
 
     def paint(self, text: str, style: str) -> str:
         return paint(text, style, self.color)
 
     def set_test(self, name: str, number: int, total: int) -> None:
+        """Starts a test with an empty queue, so the title never pairs it with the previous test's mutants."""
         self.test = f"Test {number}/{total}: {name}"
+        self.test_name = name
+        self.set_plan([])
 
     def set_plan(self, descriptions: Sequence[str]) -> None:
         self.queue = [QueueEntry(description) for description in descriptions]
@@ -192,12 +236,12 @@ class Dashboard:
         self.current = index
         self.queue[index].state = RUNNING
         self.mutant_title = describe_mutant(mutant)
+        self.mutant = mutant
+        self.mutant_offset = token_offset(source, mutant)
         self.snippet = code_snippet(source, mutant)
 
     def finish_mutant(self, index: int, state: str) -> None:
         self.queue[index].state = state
-        if isinstance(state, MutantState):
-            self.finished.append(state)
 
     def record_result(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
         self.results.append(result)
@@ -227,7 +271,11 @@ class Dashboard:
             self.selected = max(0, min(self.selected_survivor(survivors) + steps[key], len(survivors) - 1))
 
     def finish_run(self) -> None:
+        """Ends the run with every mutant in the queue, in its state combined over all tests."""
         self.run_done = True
+        self.test_name = "all tests"
+        self.queue = [QueueEntry(describe_mutant(entry.mutant), entry.state) for entry in self.combined()]
+        self.current = None
         if self.survivors():
             self.view = SURVIVORS_VIEW
 
@@ -249,32 +297,60 @@ class Dashboard:
             hints.append("q quit")
         return self.paint("  ".join(hints), DIM)
 
-    def title(self) -> str:
+    def title(self, width: int) -> str:
+        """The run's position on the left and the key hints on the right, so a narrow terminal never hides `q quit`."""
         parts = [self.paint("strain live", BOLD + CYAN), self.test]
         if self.run_done:
             parts.append("finished")
         elif self.current is not None:
             parts.append(f"mutant {self.current + 1}/{len(self.queue)}")
-        parts.append(self.key_hints())
-        return "  ·  ".join(part for part in parts if part)
+        return fit_keeping_end("  ·  ".join(part for part in parts if part) + "  ", self.key_hints(), width)
+
+    def progress(self) -> str:
+        done = sum(entry.state not in (PENDING, RUNNING) for entry in self.queue)
+        label = " ".join(part for part in (self.test_name, f"{done}/{len(self.queue)}") if part)
+        return f"{self.paint(progress_bar(done, len(self.queue)), CYAN)} {label}"
+
+    def score(self, score: float | None) -> str:
+        percent = None if score is None else score * 100
+        return self.paint(format_score(score), score_style(percent))
 
     def tally(self) -> str:
+        """The progress of the current test, the score, then the totals over every test, counting each mutant once.
+
+        The score comes before the counts, so a narrow terminal cuts the counts first.
+        """
+        states = [entry.state for entry in self.combined()]
         counts = [
-            self.paint(f"{state} {self.finished.count(state)}", STATE_STYLES[state])
+            self.paint(f"{state} {states.count(state)}", STATE_STYLES[state])
             for state in MutantState
-            if state in self.finished
+            if state in states
         ]
-        score = mutation_score(self.finished)
-        score_text = "n/a" if score is None else f"{score * 100:.1f}%"
-        return "  ".join([*counts, f"score {score_text}"])
+        return "  ".join([self.progress(), f"score {self.score(mutation_score(states))}", *counts])
 
     def rule(self, title: str, width: int) -> str:
-        heading = f"─ {title} "
-        return self.paint(fit(heading + "─" * max(0, width - len(heading)), width), BOLD + CYAN)
+        filler = "─" * max(0, width - len(f"─ {title} "))
+        return fit(f"{self.paint('─', DIM)} {self.paint(title, BOLD + CYAN)} {self.paint(filler, DIM)}", width)
 
-    def snippet_lines(self, snippet: Sequence[str]) -> list[str]:
-        styles = {"-": RED, "+": GREEN}
-        return [self.paint(line, styles.get(line[0], "")) for line in snippet]
+    def snippet_line(self, line: str, mutant: Mutant | None, offset: int) -> str:
+        """`line` with a dim gutter and, on a changed line, the mutated token highlighted."""
+        gutter, separator, text = line.partition(SNIPPET_SEPARATOR)
+        style = CHANGE_STYLES.get(line[:1], "")
+        if not style:
+            return self.paint(gutter + separator, DIM) + text
+        prefix = self.paint(gutter + separator, style)
+        if mutant is None:
+            return prefix + self.paint(text, style)
+        end = offset + len(mutant.original if line.startswith("-") else mutant.replacement)
+        return (
+            prefix
+            + self.paint(text[:offset], style)
+            + self.paint(text[offset:end], BOLD + REVERSE + style)
+            + self.paint(text[end:], style)
+        )
+
+    def snippet_lines(self, snippet: Sequence[str], mutant: Mutant | None, offset: int) -> list[str]:
+        return [self.snippet_line(line, mutant, offset) for line in snippet]
 
     def queue_line(self, index: int, entry: QueueEntry) -> str:
         marker = "▶" if index == self.current else " "
@@ -306,7 +382,7 @@ class Dashboard:
         items = action_items(self.combined(), limit=None)
         if not items:
             return [self.paint("  no findings yet", DIM)]
-        lines = [f"  {item}" for item in items]
+        lines = [f"{self.paint(' •', YELLOW)} {item}" for item in items]
         if len(lines) > rows:
             return [*lines[: rows - 1], self.paint(f"  … {len(lines) - rows + 1} more; tab shows the survivors", DIM)]
         return lines
@@ -320,32 +396,63 @@ class Dashboard:
         selected = self.selected_survivor(survivors)
         start = window_start(selected, len(survivors), rows)
         return [
-            f"{'▶' if index == selected else ' '} {describe_mutant(survivors[index].mutant)}"
+            self.survivor_list_line(survivors[index], index == selected)
             for index in range(start, min(len(survivors), start + rows))
         ]
+
+    def survivor_list_line(self, entry: CombinedResult, selected: bool) -> str:
+        kind = "" if entry.survivor is None else f"  {self.paint(str(entry.survivor), DIM)}"
+        description = describe_mutant(entry.mutant)
+        if selected:
+            return f"{self.paint('▶', BOLD + CYAN)} {self.paint(description, BOLD)}{kind}"
+        return f"  {description}{kind}"
+
+    def file_line(self, row: FileScore, width: int) -> str:
+        percent = None if row.score is None else row.score * 100
+        survived_style = STATE_STYLES[MutantState.SURVIVED] if row.survived else DIM
+        return (
+            f"  {row.file:<{width}}  {self.paint(f'{format_score(row.score):>6}', score_style(percent))}"
+            f"  {self.paint(progress_bar(row.detected, row.detected + row.survived), CYAN)}"
+            f"  {plural(row.mutants, 'mutant')}  {self.paint(f'{row.survived} survived', survived_style)}"
+        )
+
+    def file_lines(self, rows: int) -> list[str]:
+        scores = file_scores(self.combined())
+        if rows <= 0 or not scores:
+            return []
+        width = max(len(row.file) for row in scores)
+        return [self.file_line(row, width) for row in scores[:rows]]
 
     def detail(self, label: str, value: str) -> str:
         return f"{self.paint(f'{label:<{DETAIL_LABEL_WIDTH}}', DIM)} {value}"
 
-    def survivor_details(self, entry: CombinedResult) -> list[str]:
+    def survivor_facts(self, entry: CombinedResult) -> list[str]:
         mutant = entry.mutant
         context = self.contexts[mutant.id]
         kind = "" if entry.survivor is None else f"{entry.survivor} "
         return [
-            f"id {mutant.id}  {self.paint(f'equivalent? list it under [ignore] mutants in {CONFIG_FILE}', DIM)}",
+            self.detail("id", f"{mutant.id}  {self.paint(EQUIVALENT_HINT, DIM)}"),
             self.detail("function", entry.function or "unknown"),
             self.detail("coverage", execution_summary(mutant.line, context.executions)),
             self.detail(str(MutantState.SURVIVED), f"{kind}under {', '.join(entry.covered_by)}"),
             self.detail("hint", hint(entry)),
             "",
-            *self.snippet_lines(code_snippet(context.source, mutant)),
         ]
+
+    def survivor_details(self, entry: CombinedResult, rows: int) -> list[str]:
+        """The facts about `entry`, then as much of its source as fits in `rows`."""
+        mutant = entry.mutant
+        source = self.contexts[mutant.id].source
+        facts = self.survivor_facts(entry)
+        context = max(SNIPPET_CONTEXT, (rows - len(facts) - len(CHANGE_STYLES)) // 2)
+        snippet = self.snippet_lines(code_snippet(source, mutant, context), mutant, token_offset(source, mutant))
+        return [*facts, *snippet][:rows]
 
     def survivor_detail_lines(self, rows: int) -> list[str]:
         survivors = self.survivors()
         if rows <= 0 or not survivors:
             return []
-        return self.survivor_details(survivors[self.selected_survivor(survivors)])[:rows]
+        return self.survivor_details(survivors[self.selected_survivor(survivors)], rows)
 
     def build_log_lines(self, rows: int) -> list[str]:
         if rows <= 0:
@@ -365,7 +472,7 @@ class Dashboard:
             *self.panel(
                 f"Mutant: {self.mutant_title}",
                 rows.snippet,
-                lambda count: self.snippet_lines(self.snippet)[:count],
+                lambda count: self.snippet_lines(self.snippet, self.mutant, self.mutant_offset)[:count],
                 width,
             ),
             *self.panel("Mutants", rows.queue, self.queue_lines, width),
@@ -375,17 +482,18 @@ class Dashboard:
 
     def survivor_panels(self, body_rows: int, width: int) -> list[str]:
         survivors = self.survivors()
-        list_rows, detail_rows = survivor_layout(body_rows, len(survivors))
+        rows = survivor_layout(body_rows, len(survivors), len(file_scores(self.combined())))
         detail_title = "Survivor"
         if survivors:
             detail_title = f"Survivor: {describe_mutant(survivors[self.selected_survivor(survivors)].mutant)}"
         return [
-            *self.panel(f"Survivors ({len(survivors)})", list_rows, self.survivor_list_lines, width),
-            *self.panel(detail_title, detail_rows, self.survivor_detail_lines, width),
+            *self.panel(f"Survivors ({len(survivors)})", rows.survivor_list, self.survivor_list_lines, width),
+            *self.panel(detail_title, rows.details, self.survivor_detail_lines, width),
+            *self.panel("Files", rows.files, self.file_lines, width),
         ]
 
     def render(self, width: int, height: int) -> list[str]:
-        header = [self.title(), self.tally()]
+        header = [self.title(width), self.tally()]
         footer = [self.paint(self.status, DIM)]
         body_rows = max(0, height - len(header) - len(footer))
         panels = self.run_panels if self.view == RUN_VIEW else self.survivor_panels

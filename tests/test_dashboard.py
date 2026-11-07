@@ -5,7 +5,7 @@ import threading
 import unittest
 from unittest import mock
 
-from strain.console import UiMode
+from strain.console import BOLD, GREEN, RED, RESET, REVERSE, UiMode, score_style
 from strain.dashboard import (
     ALTERNATE_SCREEN,
     MAIN_SCREEN,
@@ -16,6 +16,8 @@ from strain.dashboard import (
     code_snippet,
     create_console,
     fit,
+    fit_keeping_end,
+    progress_bar,
 )
 from strain.coverage import LineCoverage
 from strain.mutators import Mutant
@@ -61,6 +63,15 @@ class FitTest(unittest.TestCase):
         self.assertEqual(plain(fit("\033[1mab\033[0m", 4)), "ab  ")
 
 
+class FitKeepingEndTest(unittest.TestCase):
+    def test_truncates_the_text_before_the_end(self) -> None:
+        self.assertEqual(fit_keeping_end("abcdef", "XY", 6), "abc…XY")
+        self.assertEqual(fit_keeping_end("ab", "XY", 6), "ab  XY")
+
+    def test_an_end_wider_than_the_line_is_truncated_itself(self) -> None:
+        self.assertEqual(fit_keeping_end("ab", "WXYZ", 3), "WX…")
+
+
 class CodeSnippetTest(unittest.TestCase):
     def test_shows_the_original_and_mutated_line_in_context(self) -> None:
         self.assertEqual(
@@ -76,6 +87,16 @@ class CodeSnippetTest(unittest.TestCase):
     def test_context_is_clipped_at_the_file_edges(self) -> None:
         first = Mutant("f.cpp", 1, 1, 0, "aor", "+", "-")
         self.assertEqual(code_snippet("+x\ny\n", first, context=2), ["- 1 │ +x", "+ 1 │ -x", "  2 │ y"])
+
+
+class ProgressBarTest(unittest.TestCase):
+    def test_fills_in_proportion_to_the_finished_work(self) -> None:
+        self.assertEqual(progress_bar(0, 4, width=8), "░░░░░░░░")
+        self.assertEqual(progress_bar(1, 4, width=8), "██░░░░░░")
+        self.assertEqual(progress_bar(4, 4, width=8), "████████")
+
+    def test_an_empty_plan_shows_an_empty_bar(self) -> None:
+        self.assertEqual(progress_bar(0, 0, width=4), "░░░░")
 
 
 class DashboardTest(unittest.TestCase):
@@ -104,16 +125,32 @@ class DashboardTest(unittest.TestCase):
     def test_queue_shows_previous_results_and_upcoming_mutants(self) -> None:
         dashboard = self.make_dashboard()
         dashboard.start_mutant(0, SOURCE, MUTANT)
+        dashboard.record_result(killed(MUTANT), SOURCE, LINE_COVERAGE)
         dashboard.finish_mutant(0, MutantState.KILLED)
-        dashboard.start_mutant(1, SOURCE, MUTANT)
+        dashboard.start_mutant(1, SOURCE, SECOND_MUTANT)
+        dashboard.record_result(survived(SECOND_MUTANT), SOURCE, LINE_COVERAGE)
         dashboard.finish_mutant(1, MutantState.SURVIVED)
         dashboard.start_mutant(2, SOURCE, MUTANT)
-        text = "\n".join(dashboard.render(60, 30))
+        text = "\n".join(dashboard.render(80, 30))
         self.assertRegex(text, r"killed +src/clamp.cpp:1:1")
         self.assertRegex(text, r"survived +src/clamp.cpp:2:1")
         self.assertRegex(text, r"▶ running +src/clamp.cpp:3:1")
         self.assertRegex(text, r"pending +src/clamp.cpp:4:1")
-        self.assertIn("killed 1  survived 1  score 50.0%", text)
+        self.assertIn("score 50.0%  killed 1  survived 1", text)
+        self.assertIn("██░░░░░░░░░░░░░░░░░░ sample_tests 2/20", text)
+
+    def test_colors_highlight_the_mutated_token_and_the_score(self) -> None:
+        dashboard = Dashboard(color=True)
+        dashboard.set_plan(["first"])
+        dashboard.start_mutant(0, SOURCE, MUTANT)
+        dashboard.record_result(killed(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.finish_mutant(0, MutantState.KILLED)
+        frame = dashboard.render(60, 30)
+        text = "\n".join(frame)
+        self.assertIn(f"{BOLD}{REVERSE}{RED}<{RESET}", text)
+        self.assertIn(f"{BOLD}{REVERSE}{GREEN}<={RESET}", text)
+        self.assertIn(f"score {score_style(100.0)}100.0%{RESET}", text)
+        self.assertTrue(all(len(plain(line)) == 60 for line in frame))
 
     def test_queue_scrolls_to_keep_the_current_mutant_visible(self) -> None:
         dashboard = self.make_dashboard()
@@ -178,12 +215,22 @@ class SurvivorBrowserTest(unittest.TestCase):
         text = "\n".join(dashboard.render(120, 40))
         self.assertIn("Survivors (1)", text)
         self.assertRegex(text, r"▶ src/clamp.cpp:3:11 \[ror\] `<` → `<=`")
-        self.assertIn(f"id {MUTANT.id}", text)
+        self.assertIn(f"id         {MUTANT.id}", text)
         self.assertIn("function   clamp(int, int)", text)
         self.assertIn("line 3 executed 12 times by sample_tests; 2/2 branches taken", text)
         self.assertIn("survived   not_detected under sample_tests", text)
         self.assertIn("add a test where `<` and `<=` give different results", text)
         self.assertIn("+ 3 │     if (a <= b)", text)
+        self.assertRegex(text, r"`<` → `<=` +not_detected")
+
+    def test_survivors_view_shows_the_score_of_each_file(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.record_result(killed(SECOND_MUTANT), SOURCE, LINE_COVERAGE)
+        dashboard.press("tab")
+        text = "\n".join(dashboard.render(120, 40))
+        self.assertIn("─ Files ─", text)
+        self.assertRegex(text, r"src/clamp.cpp +50.0% +█{10}░{10} +2 mutants +1 survived")
 
     def test_arrow_keys_move_the_selection_and_stay_in_range(self) -> None:
         dashboard = self.make_dashboard()
@@ -194,10 +241,10 @@ class SurvivorBrowserTest(unittest.TestCase):
             dashboard.press(key)
         text = "\n".join(dashboard.render(120, 40))
         self.assertRegex(text, r"▶ src/clamp.cpp:3:11 \[ror\] `<` → `>=`")
-        self.assertIn(f"id {SECOND_MUTANT.id}", text)
+        self.assertIn(f"id         {SECOND_MUTANT.id}", text)
         for key in ("up", "up", "up"):
             dashboard.press(key)
-        self.assertIn(f"id {MUTANT.id}", "\n".join(dashboard.render(120, 40)))
+        self.assertIn(f"id         {MUTANT.id}", "\n".join(dashboard.render(120, 40)))
 
     def test_execution_counts_add_up_over_every_test_that_ran_the_line(self) -> None:
         dashboard = self.make_dashboard()
@@ -216,6 +263,33 @@ class SurvivorBrowserTest(unittest.TestCase):
         self.assertIn("Survivors (0)", text)
         self.assertIn("no surviving mutants", text)
 
+    def test_totals_count_a_mutant_once_over_every_test(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(killed(MUTANT, "sample_tests"), SOURCE, LINE_COVERAGE)
+        dashboard.record_result(survived(MUTANT, "other_tests"), SOURCE, LINE_COVERAGE)
+        dashboard.record_result(survived(SECOND_MUTANT), SOURCE, LINE_COVERAGE)
+        tally = dashboard.render(120, 40)[1]
+        self.assertIn("score 50.0%  killed 1  survived 1", tally)
+
+    def test_starting_a_test_drops_the_previous_tests_queue(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.start_mutant(1, SOURCE, MUTANT)
+        dashboard.set_test("other_tests", 2, 2)
+        title = dashboard.render(120, 40)[0]
+        self.assertIn("Test 2/2: other_tests", title)
+        self.assertNotIn("mutant 2/2", title)
+
+    def test_survivor_details_are_aligned_and_the_source_fills_the_panel(self) -> None:
+        source = "".join(f"int line{number} = {number};\n" for number in range(1, 40))
+        mutant = Mutant("src/many.cpp", 20, 14, source.index("20;"), "crp", "20", "21")
+        dashboard = self.make_dashboard()
+        dashboard.record_result(survived(mutant), source, LINE_COVERAGE)
+        dashboard.press("tab")
+        text = "\n".join(dashboard.render(120, 40))
+        self.assertIn(f"id         {mutant.id}", text)
+        self.assertIn("  10 │ int line10 = 10;", text)
+        self.assertIn("  30 │ int line30 = 30;", text)
+
     def test_tab_returns_to_the_run_view(self) -> None:
         dashboard = self.make_dashboard()
         dashboard.press("tab")
@@ -229,6 +303,36 @@ class SurvivorBrowserTest(unittest.TestCase):
         frame = dashboard.render(120, 40)
         self.assertEqual(dashboard.view, SURVIVORS_VIEW)
         self.assertIn("q quit", frame[0])
+
+    def test_a_narrow_title_keeps_the_quit_key(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.finish_run()
+        title = dashboard.render(40, 40)[0]
+        self.assertTrue(title.endswith("q quit"), title)
+        self.assertIn("…", title)
+
+    def test_a_narrow_tally_keeps_the_score_and_cuts_the_counts(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(killed(MUTANT, "sample_tests"), SOURCE, LINE_COVERAGE)
+        dashboard.record_result(survived(SECOND_MUTANT), SOURCE, LINE_COVERAGE)
+        tally = dashboard.render(56, 40)[1]
+        self.assertIn("score 50.0%", tally)
+        self.assertNotIn("survived 1", tally)
+
+    def test_the_finished_run_view_lists_every_mutant_once(self) -> None:
+        dashboard = self.make_dashboard()
+        dashboard.record_result(killed(MUTANT, "sample_tests"), SOURCE, LINE_COVERAGE)
+        dashboard.set_test("other_tests", 2, 2)
+        dashboard.set_plan(["only the last test's mutant"])
+        dashboard.record_result(survived(MUTANT, "other_tests"), SOURCE, LINE_COVERAGE)
+        dashboard.record_result(survived(SECOND_MUTANT, "other_tests"), SOURCE, LINE_COVERAGE)
+        dashboard.finish_run()
+        dashboard.press("tab")
+        text = "\n".join(dashboard.render(120, 40))
+        self.assertNotIn("only the last test's mutant", text)
+        self.assertRegex(text, r"killed +src/clamp.cpp:3:11 \[ror\] `<` → `<=`")
+        self.assertRegex(text, r"survived +src/clamp.cpp:3:11 \[ror\] `<` → `>=`")
+        self.assertIn("all tests 2/2", text)
 
     def test_key_hints_are_only_shown_when_keys_are_read(self) -> None:
         self.assertNotIn("tab", Dashboard(color=False).render(120, 40)[0])

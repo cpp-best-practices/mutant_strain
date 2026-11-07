@@ -2,11 +2,21 @@
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self, TextIO
 
-from .results import CombinedResult, MutantResult, MutantState, SurvivorKind, SCORED_STATES, mutation_score
+from .mutators import Mutant
+from .results import (
+    DETECTED_STATES,
+    CombinedResult,
+    MutantResult,
+    MutantState,
+    SurvivorKind,
+    SCORED_STATES,
+    mutation_score,
+)
 
 MUTATION_TESTING_ELEMENTS_STATUS = {
     MutantState.KILLED: "Killed",
@@ -18,16 +28,18 @@ MUTATION_TESTING_ELEMENTS_STATUS = {
     MutantState.IGNORED: "Ignored",
 }
 NOT_REACHED_HINT = "add a test input that takes the other branch"
+TAB_WIDTH = 4
+EXCERPT_GUTTER = 5
 
 
-def _format_score(score: float | None) -> str:
+def format_score(score: float | None) -> str:
     return "n/a" if score is None else f"{score * 100:.1f}%"
 
 
 def summary_line(test: str, results: Sequence[MutantResult], width: int) -> str:
     states = [result.state for result in results]
     return (
-        f"{test:<{width}}   score {_format_score(mutation_score(states))}"
+        f"{test:<{width}}   score {format_score(mutation_score(states))}"
         f"   killed {states.count(MutantState.KILLED)}"
         f"  sanitizer {states.count(MutantState.KILLED_BY_SANITIZER)}"
         f"  timeout {states.count(MutantState.TIMEOUT)}"
@@ -49,6 +61,49 @@ def compiler_warning(entry: CombinedResult, source_root: Path) -> str:
         f"{source_root / mutant.file}:{mutant.line}:{mutant.column}: warning: "
         f"{entry.state} [{mutant.operator}] {_change(entry)}{_survivor_label(entry)}"
     )
+
+
+def source_excerpt(mutant: Mutant, source: str) -> list[str]:
+    """The mutated line with a caret under the operator and the replacement below it, as GCC shows a fix-it."""
+    lines = source.splitlines()
+    if not 1 <= mutant.line <= len(lines):
+        return []
+    text = lines[mutant.line - 1]
+    indent = " " * len(text[: mutant.column - 1].expandtabs(TAB_WIDTH))
+    gutter = " " * EXCERPT_GUTTER
+    return [
+        f"{mutant.line:>{EXCERPT_GUTTER}} | {text.expandtabs(TAB_WIDTH)}",
+        f"{gutter} | {indent}^{'~' * (len(mutant.original) - 1)}",
+        f"{gutter} | {indent}{mutant.replacement}",
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class FileScore:
+    file: str
+    mutants: int
+    detected: int
+    survived: int
+
+    @property
+    def score(self) -> float | None:
+        scored = self.detected + self.survived
+        return None if scored == 0 else self.detected / scored
+
+
+def file_scores(combined: Iterable[CombinedResult]) -> list[FileScore]:
+    by_file: dict[str, list[MutantState]] = {}
+    for entry in combined:
+        by_file.setdefault(entry.mutant.file, []).append(entry.state)
+    return [
+        FileScore(
+            file=file,
+            mutants=len(states),
+            detected=sum(state in DETECTED_STATES for state in states),
+            survived=states.count(MutantState.SURVIVED),
+        )
+        for file, states in sorted(by_file.items())
+    ]
 
 
 def hint(entry: CombinedResult) -> str:
@@ -97,6 +152,69 @@ def action_items(combined: Sequence[CombinedResult], limit: int | None) -> list[
         ),
     ]
     return items if limit is None else items[:limit]
+
+
+def _markdown_cell(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
+def _markdown_threshold(score: float | None, threshold: float | None) -> str:
+    if threshold is None or score is None:
+        return ""
+    if score * 100 < threshold:
+        return f" ❌ below the {threshold:g}% threshold"
+    return f" ✅ meets the {threshold:g}% threshold"
+
+
+def _markdown_counts(combined: Sequence[CombinedResult]) -> str:
+    states = [entry.state for entry in combined]
+    counts = ", ".join(f"{state} {states.count(state)}" for state in MutantState if state in states)
+    return f"{len(combined)} mutant{'' if len(combined) == 1 else 's'}: {counts}"
+
+
+def _markdown_file_table(combined: Sequence[CombinedResult]) -> list[str]:
+    return [
+        "| File | Mutants | Detected | Survived | Score |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        *(
+            f"| `{_markdown_cell(row.file)}` | {row.mutants} | {row.detected} | {row.survived} | {format_score(row.score)} |"
+            for row in file_scores(combined)
+        ),
+    ]
+
+
+def _markdown_survivors(combined: Sequence[CombinedResult]) -> list[str]:
+    survivors = [entry for entry in combined if entry.state is MutantState.SURVIVED]
+    if not survivors:
+        return []
+    return [
+        "",
+        f"### Survivors ({len(survivors)})",
+        "",
+        *(
+            f"- `{entry.mutant.file}:{entry.mutant.line}:{entry.mutant.column}` "
+            f"{_change(entry)}{_survivor_label(entry)}: {hint(entry)}"
+            for entry in survivors
+        ),
+    ]
+
+
+def markdown_summary(combined: Sequence[CombinedResult], threshold: float | None) -> str:
+    """A summary for CI pages such as `$GITHUB_STEP_SUMMARY` or a pull request comment."""
+    heading = ["## strain mutation testing", ""]
+    if not combined:
+        return "\n".join([*heading, "No mutants were generated."]) + "\n"
+    score = mutation_score(entry.state for entry in combined)
+    lines = [
+        *heading,
+        f"**Mutation score: {format_score(score)}**{_markdown_threshold(score, threshold)}",
+        "",
+        _markdown_counts(combined),
+        "",
+        *_markdown_file_table(combined),
+        *_markdown_survivors(combined),
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def _mutant_element(entry: CombinedResult) -> dict[str, Any]:

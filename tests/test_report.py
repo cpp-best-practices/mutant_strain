@@ -5,7 +5,19 @@ import unittest
 from pathlib import Path
 
 from strain.mutators import Mutant
-from strain.report import EventLog, action_items, compiler_warning, mutation_testing_elements, summary_line
+from strain.html_report import html_report
+from strain.report import (
+    NOT_REACHED_HINT,
+    EventLog,
+    FileScore,
+    action_items,
+    compiler_warning,
+    file_scores,
+    markdown_summary,
+    mutation_testing_elements,
+    source_excerpt,
+    summary_line,
+)
 from strain.results import MutantResult, MutantState, SurvivorKind, combine
 
 LESS = Mutant(file="src/math.cpp", line=4, column=9, offset=30, operator="ror", original="<", replacement="<=")
@@ -90,6 +102,136 @@ class ConsoleOutputTest(unittest.TestCase):
     def test_action_items_are_limited(self) -> None:
         combined = combine([result(LESS, "t1", MutantState.SURVIVED, function=None)])
         self.assertEqual(len(action_items(combined, limit=1)), 1)
+
+
+SOURCE = (
+    "#include <cmath>\n"
+    "\n"
+    "int abs(int value)\n"
+    "{\tif (value < 0) { return -value; }\n"
+    "  return value;\n"
+    "}\n"
+    "\n"
+    "\n"
+    "int add(int lhs, int rhs) { return lhs + rhs; }\n"
+)
+OTHER = Mutant(file="src/other.cpp", line=1, column=1, offset=0, operator="ror", original="==", replacement="!=")
+
+
+class SourceExcerptTest(unittest.TestCase):
+    def test_caret_points_at_the_operator_and_the_fix_it_shows_the_replacement(self) -> None:
+        mutant = Mutant(
+            file="src/math.cpp", line=4, column=13, offset=0, operator="ror", original="<", replacement="<="
+        )
+        self.assertEqual(
+            source_excerpt(mutant, SOURCE),
+            [
+                "    4 | {   if (value < 0) { return -value; }",
+                "      |               ^",
+                "      |               <=",
+            ],
+        )
+
+    def test_multi_character_operators_are_underlined(self) -> None:
+        mutant = Mutant(
+            file="src/math.cpp", line=1, column=1, offset=0, operator="lcr", original="&&", replacement="||"
+        )
+        self.assertEqual(source_excerpt(mutant, "&& x\n"), ["    1 | && x", "      | ^~", "      | ||"])
+
+    def test_lines_past_the_end_of_the_source_give_no_excerpt(self) -> None:
+        self.assertEqual(source_excerpt(AND, "one line\n"), [])
+
+
+class FileScoresTest(unittest.TestCase):
+    def test_scores_are_grouped_by_file(self) -> None:
+        combined = combine(
+            [
+                result(LESS, "t", MutantState.KILLED),
+                result(PLUS, "t", MutantState.SURVIVED),
+                result(AND, "t", MutantState.COMPILE_ERROR),
+                result(OTHER, "t", MutantState.TIMEOUT),
+            ]
+        )
+        self.assertEqual(
+            file_scores(combined),
+            [
+                FileScore(file="src/math.cpp", mutants=3, detected=1, survived=1),
+                FileScore(file="src/other.cpp", mutants=1, detected=1, survived=0),
+            ],
+        )
+        self.assertEqual(file_scores(combined)[0].score, 0.5)
+        self.assertIsNone(FileScore(file="f", mutants=1, detected=0, survived=0).score)
+
+
+class MarkdownSummaryTest(unittest.TestCase):
+    def test_summary_has_score_files_and_survivors(self) -> None:
+        combined = combine(
+            [
+                result(LESS, "t", MutantState.KILLED),
+                result(PLUS, "t", MutantState.SURVIVED, SurvivorKind.NOT_DETECTED),
+                result(OTHER, "t", MutantState.SURVIVED, function=None),
+            ]
+        )
+        self.assertEqual(
+            markdown_summary(combined, threshold=50.0).splitlines(),
+            [
+                "## strain mutation testing",
+                "",
+                "**Mutation score: 33.3%** ❌ below the 50% threshold",
+                "",
+                "3 mutants: killed 1, survived 2",
+                "",
+                "| File | Mutants | Detected | Survived | Score |",
+                "| --- | ---: | ---: | ---: | ---: |",
+                "| `src/math.cpp` | 2 | 1 | 1 | 50.0% |",
+                "| `src/other.cpp` | 1 | 0 | 1 | 0.0% |",
+                "",
+                "### Survivors (2)",
+                "",
+                "- `src/math.cpp:9:12` `+` → `-` (not_detected): assert the computed value",
+                "- `src/other.cpp:1:1` `==` → `!=`: add a test where `==` and `!=` give different results",
+            ],
+        )
+
+    def test_summary_without_survivors_meets_the_threshold(self) -> None:
+        markdown = markdown_summary(combine([result(LESS, "t", MutantState.KILLED)]), threshold=90.0)
+        self.assertIn("**Mutation score: 100.0%** ✅ meets the 90% threshold\n", markdown)
+        self.assertNotIn("Survivors", markdown)
+
+    def test_summary_without_mutants(self) -> None:
+        self.assertIn("No mutants were generated.", markdown_summary([], threshold=None))
+
+    def test_pipes_in_file_names_do_not_break_the_table(self) -> None:
+        pipe = Mutant(file="a|b.cpp", line=1, column=1, offset=0, operator="lcr", original="||", replacement="&&")
+        markdown = markdown_summary(combine([result(pipe, "t", MutantState.SURVIVED)]), threshold=None)
+        self.assertIn("| `a\\|b.cpp` |", markdown)
+
+
+class HtmlReportTest(unittest.TestCase):
+    def test_report_shows_escaped_source_with_its_mutants(self) -> None:
+        combined = combine(
+            [
+                result(LESS, "t1", MutantState.KILLED),
+                result(PLUS, "t1", MutantState.SURVIVED, SurvivorKind.NOT_REACHED),
+            ]
+        )
+        page = html_report(combined, {"src/math.cpp": SOURCE})
+        self.assertTrue(page.startswith("<!DOCTYPE html>"))
+        self.assertIn("<title>strain mutation report: 50.0%</title>", page)
+        self.assertIn("#include &lt;cmath&gt;", page)
+        self.assertIn('id="src/math.cpp:4"', page)
+        self.assertIn('class="line survived"', page)
+        self.assertIn('class="line killed"', page)
+        self.assertIn("<code>&lt;</code> → <code>&lt;=</code>", page)
+        self.assertIn("killed by t1", page)
+        self.assertIn(NOT_REACHED_HINT, page)
+        self.assertIn('href="#src/math.cpp:9"', page)
+        self.assertNotIn("<script", page)
+
+    def test_report_without_mutants(self) -> None:
+        page = html_report([], {})
+        self.assertIn("<title>strain mutation report: n/a</title>", page)
+        self.assertIn("No mutants were generated", page)
 
 
 class MutationTestingElementsTest(unittest.TestCase):
