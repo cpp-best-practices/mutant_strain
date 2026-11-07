@@ -10,6 +10,7 @@ from pathlib import Path
 from strain import cppcheck_engine, tree_sitter_engine
 from strain.cli import main
 from strain.console import Console
+from strain.mutators import Engine, fallback_engine
 from strain.coverage import LineCoverage
 from strain.results import MutantResult, MutantState
 from strain.runner import Runner, RunOptions
@@ -29,9 +30,15 @@ def configure_project(
 ) -> None:
     run_checked("git", "init", "-q", cwd=root)
     run_checked("git", "add", ".", cwd=root)
-    run_checked("git", "-c", "user.name=strain", "-c", "user.email=strain@example.com", "commit", "-qm", "fixture", cwd=root)
     run_checked(
-        "cmake", "-S", root, "-B", build_dir,
+        "git", "-c", "user.name=strain", "-c", "user.email=strain@example.com", "commit", "-qm", "fixture", cwd=root
+    )
+    run_checked(
+        "cmake",
+        "-S",
+        root,
+        "-B",
+        build_dir,
         f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         f"-DCMAKE_CXX_FLAGS={cxx_flags}",
@@ -52,6 +59,29 @@ class RecordingConsole(Console):
 
     def run_finished(self) -> None:
         self.finished_runs += 1
+
+
+PARSED_STATES = [
+    (3, "aor", "-", "killed"),
+    (7, "ror", "<=", "survived"),
+    (7, "ror", ">=", "survived"),
+    (11, "lcr", "||", "survived"),
+    (13, "aor", "/", "killed_by_sanitizer"),
+    (15, "aor", "-", "ignored"),
+]
+# A macro from a header that cppcheck, which analyzes each source alone, cannot expand and so cannot parse around.
+UNKNOWN_MACRO_DEFINITION = "#define SAMPLE_LOG(value)\n"
+UNKNOWN_MACRO_USE = "\nint logged(int value) { SAMPLE_LOG(value) return value; }\n"
+SINGLE_TEST_STATES = [
+    (3, "aor", "-", "killed"),
+    (7, "ror", "<=", "survived"),
+    (7, "ror", ">=", "survived"),
+    (11, "lcr", "||", "survived"),
+    (13, "aor", "/", "killed_by_sanitizer"),
+    (15, "aor", "-", "ignored"),
+    (17, "aor", "/", "compile_error"),
+    (17, "aor", "/", "compile_error"),
+]
 
 
 def run_strain(*argv: str) -> tuple[int, str, str]:
@@ -80,8 +110,12 @@ class EndToEndTest(unittest.TestCase):
         report = json.loads((self.report_dir / "report.json").read_text())
         mutants = report["files"]["src/sample.cpp"]["mutants"]
         return [
-            (mutant["location"]["start"]["line"], mutant["mutatorName"], mutant["replacement"],
-             mutant.get("statusReason", mutant["status"]))
+            (
+                mutant["location"]["start"]["line"],
+                mutant["mutatorName"],
+                mutant["replacement"],
+                mutant.get("statusReason", mutant["status"]),
+            )
             for mutant in mutants
         ]
 
@@ -89,24 +123,25 @@ class EndToEndTest(unittest.TestCase):
         configure_project(self.root, self.build_dir)
 
         exit_code, stdout, _ = run_strain(
-            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^sample_tests$",
-            "--threshold", "50", "--engine", "lexer",
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^sample_tests$",
+            "--threshold",
+            "50",
+            "--engine",
+            "lexer",
         )
 
         self.assertEqual(exit_code, 1, stdout)
-        self.assertEqual(
-            self.mutant_states(),
-            [
-                (3, "aor", "-", "killed"),
-                (7, "ror", "<=", "survived"),
-                (7, "ror", ">=", "survived"),
-                (11, "lcr", "||", "survived"),
-                (13, "aor", "/", "killed_by_sanitizer"),
-                (15, "aor", "-", "ignored"),
-                (17, "aor", "/", "compile_error"),
-                (17, "aor", "/", "compile_error"),
-            ],
-        )
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+        self.assert_single_test_log(stdout)
+        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+        self.assertTrue((self.report_dir / "events.jsonl").is_file())
+
+    def assert_single_test_log(self, stdout: str) -> None:
         self.assertIn("sample_tests   score 40.0%   killed 1  sanitizer 1  timeout 0  survived 3", stdout)
         self.assertIn("✓ working tree is clean", stdout)
         self.assertIn("✓ selected 1 test: sample_tests", stdout)
@@ -118,7 +153,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("✓ sources restored and rebuilt", stdout)
         self.assertIn("mutation score 40.0%   ✗ below --threshold 50%", stdout)
         self.assertIn("clamp_to_zero() is pseudo-tested: nothing checks its result", stdout)
-        self.assertIn(f"{self.root / 'src' / 'sample.cpp'}:7:13: warning: survived [ror]", stdout)
+        self.assertIn(f"{self.root.resolve() / 'src' / 'sample.cpp'}:7:13: warning: survived [ror]", stdout)
         self.assertIn("    7 |   if (value < 0) { return 0; }\n      |             ^\n      |             <=\n", stdout)
         self.assertIn("▸ Files", stdout)
         self.assertRegex(stdout, r"src/sample\.cpp\s+40\.0%\s+8 mutants\s+2 detected\s+3 survived")
@@ -132,23 +167,19 @@ class EndToEndTest(unittest.TestCase):
         configure_project(self.root, self.build_dir)
 
         exit_code, stdout, _ = run_strain(
-            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^sample_tests$",
-            "--engine", engine,
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^sample_tests$",
+            "--engine",
+            engine,
         )
 
         self.assertEqual(exit_code, 0, stdout)
         self.assertIn(f"✓ mutation engine: {engine}", stdout)
-        self.assertEqual(
-            self.mutant_states(),
-            [
-                (3, "aor", "-", "killed"),
-                (7, "ror", "<=", "survived"),
-                (7, "ror", ">=", "survived"),
-                (11, "lcr", "||", "survived"),
-                (13, "aor", "/", "killed_by_sanitizer"),
-                (15, "aor", "-", "ignored"),
-            ],
-        )
+        self.assertEqual(self.mutant_states(), PARSED_STATES)
 
     @unittest.skipUnless(tree_sitter_engine.is_available(), "needs the tree-sitter and tree-sitter-cpp packages")
     def test_tree_sitter_engine(self) -> None:
@@ -157,6 +188,70 @@ class EndToEndTest(unittest.TestCase):
     @unittest.skipUnless(cppcheck_engine.is_available(), "needs cppcheck on PATH")
     def test_cppcheck_engine(self) -> None:
         self.assert_parsing_engine_skips_declarators("cppcheck")
+
+    def assert_test_code_is_not_mutated(self, engine: str) -> None:
+        (self.root / "strain.toml").unlink()
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = run_strain(
+            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "--engine", engine
+        )
+
+        self.assertEqual(exit_code, 0, stdout)
+        report = json.loads((self.report_dir / "report.json").read_text())
+        self.assertEqual(list(report["files"]), ["src/sample.cpp"])
+        self.assertNotIn("tests/sample_tests.cpp", stdout)
+
+    @unittest.skipUnless(cppcheck_engine.is_available(), "needs cppcheck on PATH")
+    def test_cppcheck_engine_does_not_mutate_test_code(self) -> None:
+        self.assert_test_code_is_not_mutated("cppcheck")
+
+    def test_lexer_engine_does_not_mutate_test_code(self) -> None:
+        self.assert_test_code_is_not_mutated("lexer")
+
+    def use_a_macro_cppcheck_cannot_expand(self) -> None:
+        header = self.root / "include" / "sample.hpp"
+        header.write_text(
+            header.read_text().replace("#define SAMPLE_HPP\n", "#define SAMPLE_HPP\n" + UNKNOWN_MACRO_DEFINITION)
+        )
+        source = self.root / "src" / "sample.cpp"
+        source.write_text(source.read_text() + UNKNOWN_MACRO_USE)
+        configure_project(self.root, self.build_dir)
+
+    def run_sample_tests(self, engine: str) -> tuple[int, str, str]:
+        return run_strain(
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^sample_tests$",
+            "--engine",
+            engine,
+        )
+
+    @unittest.skipUnless(cppcheck_engine.is_available(), "needs cppcheck on PATH")
+    def test_auto_engine_falls_back_for_a_source_cppcheck_cannot_parse(self) -> None:
+        self.use_a_macro_cppcheck_cannot_expand()
+        fallback = fallback_engine(Engine.CPPCHECK)
+
+        exit_code, stdout, stderr = self.run_sample_tests("auto")
+
+        self.assertEqual(exit_code, 0, stdout + stderr)
+        self.assertIn("✓ mutation engine: cppcheck", stdout)
+        self.assertIn("src/sample.cpp: cppcheck cannot parse it, line 22:", stderr)
+        self.assertIn(f"[unknownMacro]; using the {fallback} engine for this file", stderr)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES if fallback is Engine.LEXER else PARSED_STATES)
+
+    @unittest.skipUnless(cppcheck_engine.is_available(), "needs cppcheck on PATH")
+    def test_cppcheck_engine_stops_at_a_source_it_cannot_parse(self) -> None:
+        self.use_a_macro_cppcheck_cannot_expand()
+
+        exit_code, stdout, stderr = self.run_sample_tests("cppcheck")
+
+        self.assertEqual(exit_code, 2, stdout + stderr)
+        self.assertIn("src/sample.cpp: cppcheck cannot parse it, line 22:", stderr)
+        self.assertIn("[unknownMacro], or pass --engine lexer", stderr)
 
     def test_per_test_strategy_combines_results(self) -> None:
         configure_project(self.root, self.build_dir)
@@ -172,8 +267,14 @@ class EndToEndTest(unittest.TestCase):
         configure_project(self.root, self.build_dir)
 
         exit_code, stdout, _ = run_strain(
-            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^other_tests$",
-            "--ui", "json",
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "-R",
+            "^other_tests$",
+            "--ui",
+            "json",
         )
 
         self.assertEqual(exit_code, 0, stdout)
@@ -204,12 +305,21 @@ class EndToEndTest(unittest.TestCase):
 
     def test_build_without_coverage_fails_even_when_safety_nets_are_ignored(self) -> None:
         configure_project(
-            self.root, self.build_dir, cxx_flags="-fsanitize=address,undefined", linker_flags="-fsanitize=address,undefined"
+            self.root,
+            self.build_dir,
+            cxx_flags="-fsanitize=address,undefined",
+            linker_flags="-fsanitize=address,undefined",
         )
 
         exit_code, _, stderr = run_strain(
-            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "--safety-nets", "ignore",
-            "--threshold", "50",
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "--safety-nets",
+            "ignore",
+            "--threshold",
+            "50",
         )
 
         self.assertEqual(exit_code, 2)
@@ -230,7 +340,8 @@ class EndToEndTest(unittest.TestCase):
         configure_project(self.root, self.build_dir)
         runner = Runner(
             RunOptions(build_dir=self.build_dir, report_dir=self.report_dir, include="^sample_tests$"),
-            io.StringIO(), io.StringIO(),
+            io.StringIO(),
+            io.StringIO(),
         )
         console = RecordingConsole()
         runner.console = console

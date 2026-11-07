@@ -9,7 +9,9 @@ from strain.ctest import executables_by_test
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_project"
 
 
-@unittest.skipUnless(shutil.which("cmake") and shutil.which("ctest") and shutil.which("g++"), "needs cmake, ctest and g++")
+@unittest.skipUnless(
+    shutil.which("cmake") and shutil.which("ctest") and shutil.which("g++"), "needs cmake, ctest and g++"
+)
 class TestExecutablesTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

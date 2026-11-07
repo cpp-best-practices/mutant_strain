@@ -79,7 +79,7 @@ class SuppressedLinesTest(unittest.TestCase):
         self.assertEqual(suppressed_lines("a + b; // mutate-off\nc + d;\n", arid=()), {1})
 
     def test_arid_calls(self) -> None:
-        source = "LOG_INFO(a + b);\nspdlog::info(\"{}\", c - d);\nkeep(e * f);\n"
+        source = 'LOG_INFO(a + b);\nspdlog::info("{}", c - d);\nkeep(e * f);\n'
         self.assertEqual(suppressed_lines(source, arid=("LOG_*", "spdlog::*")), {1, 2})
 
 

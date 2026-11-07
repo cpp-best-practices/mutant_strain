@@ -1,10 +1,10 @@
 """The compilation database, `-fsyntax-only` pre-checks and incremental rebuilds."""
 
 import json
-import os
 import re
 import shlex
 import subprocess
+import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,7 +55,7 @@ def _command_from_entry(entry: Mapping[str, Any]) -> CompileCommand:
     arguments = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
     return CompileCommand(
         directory=directory,
-        file=Path(os.path.normpath(directory / entry["file"])),
+        file=(directory / entry["file"]).resolve(),
         arguments=tuple(arguments),
     )
 
@@ -77,7 +77,7 @@ class CompilationDatabase:
         return cls.from_entries(json.loads(path.read_text()))
 
     def command_for(self, file: Path) -> CompileCommand | None:
-        return self._by_file.get(Path(os.path.normpath(file)))
+        return self._by_file.get(file.resolve())
 
 
 def build_command(build_dir: Path, target: str | None = None) -> list[str]:
@@ -108,11 +108,46 @@ def build(build_dir: Path, target: str | None = None, on_output: Callable[[str],
     return process.returncode == 0
 
 
+# Make decides what to rebuild by comparing modification times, and the make macOS ships (GNU make 3.81) and some
+# file systems keep only whole seconds of them. The margin covers file systems that stamp with a clock a tick behind.
+TIMESTAMP_RESOLUTION_SECONDS = 1.0
+TIMESTAMP_MARGIN_SECONDS = 0.05
+
+
+class BuildClock:
+    """Orders source writes after the last build, so a build never mistakes a changed source for an up-to-date one.
+
+    A source written in the same second its object was built looks no newer than the object to a make that compares
+    whole seconds, which then skips the rebuild and runs the previous mutant's binary.
+    """
+
+    def __init__(self) -> None:
+        self.last_build_finished = 0.0
+
+    def build_finished(self) -> None:
+        self.last_build_finished = time.time()
+
+    def wait_until_writes_outdate_the_build(self) -> None:
+        next_second = (self.last_build_finished // TIMESTAMP_RESOLUTION_SECONDS + 1) * TIMESTAMP_RESOLUTION_SECONDS
+        time.sleep(max(0.0, next_second + TIMESTAMP_MARGIN_SECONDS - time.time()))
+
+
 def _file_api_directory(build_dir: Path) -> Path:
     return build_dir / ".cmake" / "api" / "v1"
 
 
-def _read_codemodel_artifacts(reply_dir: Path) -> dict[Path, str]:
+@dataclass(frozen=True, slots=True)
+class Target:
+    name: str
+    sources: frozenset[Path]
+
+
+def _target_from_details(details: Mapping[str, Any], source_dir: Path) -> Target:
+    sources = frozenset((source_dir / source["path"]).resolve() for source in details.get("sources", []))
+    return Target(details["name"], sources)
+
+
+def _read_codemodel_artifacts(reply_dir: Path) -> dict[Path, Target]:
     indexes = sorted(reply_dir.glob("index-*.json"))
     if not indexes:
         return {}
@@ -122,17 +157,18 @@ def _read_codemodel_artifacts(reply_dir: Path) -> dict[Path, str]:
         return {}
     model = json.loads((reply_dir / codemodel["jsonFile"]).read_text())
     build_dir = Path(model["paths"]["build"])
-    artifacts: dict[Path, str] = {}
+    source_dir = Path(model["paths"]["source"])
+    artifacts: dict[Path, Target] = {}
     for configuration in model["configurations"]:
         for target in configuration["targets"]:
             details = json.loads((reply_dir / target["jsonFile"]).read_text())
             for artifact in details.get("artifacts", []):
-                artifacts[Path(os.path.normpath(build_dir / artifact["path"]))] = target["name"]
+                artifacts[(build_dir / artifact["path"]).resolve()] = _target_from_details(details, source_dir)
     return artifacts
 
 
-def target_artifacts(build_dir: Path) -> dict[Path, str]:
-    """The files the build's targets produce, keyed by absolute path, from the CMake file API.
+def target_artifacts(build_dir: Path) -> dict[Path, Target]:
+    """The target that produces each of the build's files, keyed by absolute path, from the CMake file API.
 
     Writes a codemodel query and reconfigures the build folder so CMake answers it; empty if that fails.
     """

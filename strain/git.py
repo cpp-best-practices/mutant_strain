@@ -30,4 +30,6 @@ def parse_changed_lines(diff: str) -> dict[str, set[int]]:
 
 
 def changed_lines(root: Path, ref: str) -> dict[str, set[int]]:
-    return parse_changed_lines(_git(root, "diff", "--relative", "--unified=0", "--no-color", "--no-ext-diff", ref, "--"))
+    return parse_changed_lines(
+        _git(root, "diff", "--relative", "--unified=0", "--no-color", "--no-ext-diff", ref, "--")
+    )

@@ -1,10 +1,12 @@
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from strain.build import (
+    BuildClock,
     CompileCommand,
     CompilationDatabase,
     CompilerIdentity,
@@ -29,6 +31,24 @@ ENTRIES = [
         "file": "../tests/t.cpp",
     },
 ]
+
+
+class BuildClockTest(unittest.TestCase):
+    def test_a_write_after_the_wait_lands_in_a_later_second_than_the_build(self) -> None:
+        clock = BuildClock()
+        clock.build_finished()
+
+        clock.wait_until_writes_outdate_the_build()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "a.cpp"
+            source.write_bytes(b"int f();\n")
+
+            self.assertGreater(int(source.stat().st_mtime), int(clock.last_build_finished))
+
+    def test_no_wait_before_the_first_build(self) -> None:
+        start = time.monotonic()
+        BuildClock().wait_until_writes_outdate_the_build()
+        self.assertLess(time.monotonic() - start, 0.5)
 
 
 class CompilationDatabaseTest(unittest.TestCase):
@@ -60,6 +80,37 @@ class CompilationDatabaseTest(unittest.TestCase):
     def test_compile_command_is_a_value(self) -> None:
         command = CompileCommand(directory=Path("/b"), file=Path("/b/a.cpp"), arguments=("g++", "-c", "a.cpp"))
         self.assertEqual(command.syntax_only_arguments(), ["g++", "a.cpp", "-fsyntax-only"])
+
+
+class SymlinkedCompilationDatabaseTest(unittest.TestCase):
+    """Like macOS, where the temporary directory /var/folders is a symlink into /private/var."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.real_dir = Path(self._tmp.name).resolve() / "private"
+        (self.real_dir / "src").mkdir(parents=True)
+        (self.real_dir / "src" / "a.cpp").write_text("int f() { return 1; }\n")
+        self.link_dir = Path(self._tmp.name).resolve() / "linked"
+        self.link_dir.symlink_to(self.real_dir, target_is_directory=True)
+        self.database = CompilationDatabase.from_entries(
+            [
+                {
+                    "directory": str(self.link_dir / "build"),
+                    "arguments": ["g++", "-c", "../src/a.cpp"],
+                    "file": "../src/a.cpp",
+                }
+            ]
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_files_are_listed_by_their_resolved_path(self) -> None:
+        self.assertEqual([command.file for command in self.database.commands], [self.real_dir / "src" / "a.cpp"])
+
+    def test_lookup_by_either_path(self) -> None:
+        self.assertIsNotNone(self.database.command_for(self.real_dir / "src" / "a.cpp"))
+        self.assertIsNotNone(self.database.command_for(self.link_dir / "src" / "a.cpp"))
 
 
 def compile_command(*arguments: str) -> CompileCommand:
@@ -130,8 +181,14 @@ class TargetBuildTest(unittest.TestCase):
 
     def test_artifacts_map_to_their_targets(self) -> None:
         artifacts = target_artifacts(self.build_dir)
-        self.assertEqual(artifacts.get(self.build_dir / "sample_tests"), "sample_tests")
-        self.assertEqual(artifacts.get(self.build_dir / "other_tests"), "other_tests")
+        self.assertEqual(artifacts[self.build_dir / "sample_tests"].name, "sample_tests")
+        self.assertEqual(artifacts[self.build_dir / "other_tests"].name, "other_tests")
+
+    def test_targets_list_their_own_sources(self) -> None:
+        artifacts = target_artifacts(self.build_dir)
+        self.assertEqual(
+            artifacts[self.build_dir / "sample_tests"].sources, {(FIXTURE / "tests" / "sample_tests.cpp").resolve()}
+        )
 
     def test_building_a_target_leaves_other_targets_alone(self) -> None:
         self.assertTrue(build(self.build_dir, "sample_tests"))

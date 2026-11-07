@@ -11,8 +11,10 @@ from typing import TextIO
 
 from . import ctest, git
 from .build import (
+    BuildClock,
     CompilationDatabase,
     CompileCommand,
+    Target,
     build,
     build_command,
     read_cmake_cache,
@@ -29,6 +31,7 @@ from .mutators import (
     Mutant,
     apply_mutant,
     describe_mutant,
+    fallback_engine,
     mutants_at,
     operator_sites,
     resolve_engine,
@@ -156,7 +159,8 @@ class Runner:
         self.console = create_console(out, err, options.ui)
         self.build_dir = options.build_dir.resolve()
         self.source_dir = cmake_source_dir(self.build_dir)
-        self.journal = Journal(self.build_dir / "strain-journal")
+        self.build_clock = BuildClock()
+        self.journal = Journal(self.build_dir / "strain-journal", self.build_clock.wait_until_writes_outdate_the_build)
         self.coverage = GcovCoverage(self.build_dir)
         self.config = Config()
         self.database = CompilationDatabase([])
@@ -164,7 +168,7 @@ class Runner:
         self.killed: set[str] = set()
         self.engine = Engine.LEXER
         self.sites: dict[str, list[OperatorSite]] = {}
-        self.test_targets: dict[str, str] = {}
+        self.test_targets: dict[str, Target] = {}
         self.build_is_mutated = False
         self.coverage_verified = False
 
@@ -177,7 +181,10 @@ class Runner:
 
     def build(self, target: str | None = None) -> bool:
         self.console.build_started(shlex.join(build_command(Path(short_path(self.build_dir)), target)))
-        return build(self.build_dir, target, self.console.build_output)
+        try:
+            return build(self.build_dir, target, self.console.build_output)
+        finally:
+            self.build_clock.build_finished()
 
     def build_or_fail(self, activity: str, success: str, failure: str) -> None:
         self.console.status(f"  {activity}…")
@@ -222,7 +229,7 @@ class Runner:
         self.console.step(f"mutation engine: {engine}")
         return engine
 
-    def find_test_targets(self) -> dict[str, str]:
+    def find_test_targets(self) -> dict[str, Target]:
         artifacts = target_artifacts(self.build_dir)
         return {
             test: artifacts[executable]
@@ -232,7 +239,13 @@ class Runner:
 
     def target_for(self, test: str) -> str | None:
         """The CMake target that builds the program `test` runs; None rebuilds everything."""
-        return self.test_targets.get(test)
+        target = self.test_targets.get(test)
+        return None if target is None else target.name
+
+    def test_code(self, test: str) -> frozenset[Path]:
+        """The sources of the program `test` runs: they do the testing, so mutating them tests nothing."""
+        target = self.test_targets.get(test)
+        return frozenset() if target is None else target.sources
 
     def describe_config(self) -> str:
         if not (self.source_dir / CONFIG_FILE).is_file():
@@ -281,11 +294,11 @@ class Runner:
         if present:
             self.console.step(f"safety nets that hold for the whole build: {', '.join(present)}")
 
-    def source_files(self, coverage: dict[Path, FileCoverage]) -> list[SourceFile]:
+    def source_files(self, coverage: dict[Path, FileCoverage], test_code: frozenset[Path]) -> list[SourceFile]:
         files: list[SourceFile] = []
         for path, file_coverage in coverage.items():
             resolved = path.resolve()
-            if not self.is_project_source(resolved) or not resolved.is_file():
+            if not self.is_project_source(resolved) or resolved in test_code or not resolved.is_file():
                 continue
             relative = resolved.relative_to(self.source_dir).as_posix()
             if self.config.is_excluded(relative):
@@ -297,11 +310,19 @@ class Runner:
     def sites_for(self, source: SourceFile) -> list[OperatorSite]:
         """The operators the engine finds in `source`, found once per run since every test restores the sources."""
         if source.relative not in self.sites:
-            try:
-                self.sites[source.relative] = operator_sites(self.engine, source.text)
-            except EngineError as error:
-                raise StrainError(f"{source.relative}: {error}") from error
+            self.sites[source.relative] = self.find_sites(source)
         return self.sites[source.relative]
+
+    def find_sites(self, source: SourceFile) -> list[OperatorSite]:
+        """The engine's sites; under `--engine auto`, a source it cannot parse goes to the next installed engine."""
+        try:
+            return operator_sites(self.engine, source.text)
+        except EngineError as error:
+            fallback = fallback_engine(self.engine) if self.options.engine is Engine.AUTO else None
+            if fallback is None:
+                raise StrainError(f"{source.relative}: {error}, or pass --engine lexer") from error
+            self.console.warn(f"{source.relative}: {error}; using the {fallback} engine for this file")
+            return operator_sites(fallback, source.text)
 
     def mutants_for(self, source: SourceFile) -> list[Mutant]:
         lines = source.coverage.executed_lines()
@@ -339,7 +360,9 @@ class Runner:
             run = ctest.run_test(self.build_dir, test, timeout)
         state = classify_run(run)
         survivor = survivor_kind(source.coverage, mutant.line) if state is MutantState.SURVIVED else None
-        return Outcome(state, survivor, f"{run.duration:.2f}s" if survivor is None else f"{run.duration:.2f}s, {survivor}")
+        return Outcome(
+            state, survivor, f"{run.duration:.2f}s" if survivor is None else f"{run.duration:.2f}s, {survivor}"
+        )
 
     def run_baseline(self, test: str, events: EventLog) -> float | None:
         self.coverage.reset()
@@ -377,7 +400,7 @@ class Runner:
             return []
         coverage = self.coverage.collect()
         self.verify_coverage_data(test, coverage)
-        planned = self.plan_mutants(self.source_files(coverage))
+        planned = self.plan_mutants(self.source_files(coverage, self.test_code(test)))
         self.console.plan([entry.mutant for entry in planned])
         width = len(str(len(planned)))
         results: list[MutantResult] = []
@@ -423,9 +446,17 @@ class Runner:
         if result.state in DETECTED_STATES:
             self.killed.add(mutant.id)
         events.emit(
-            "mutant", test=result.test, id=mutant.id, file=mutant.file, line=mutant.line, column=mutant.column,
-            operator=mutant.operator, original=mutant.original, replacement=mutant.replacement,
-            state=result.state, survivor=result.survivor,
+            "mutant",
+            test=result.test,
+            id=mutant.id,
+            file=mutant.file,
+            line=mutant.line,
+            column=mutant.column,
+            operator=mutant.operator,
+            original=mutant.original,
+            replacement=mutant.replacement,
+            state=result.state,
+            survivor=result.survivor,
         )
 
     def show_mutant(self, progress: str, mutant: Mutant, state: str, detail: str) -> None:
@@ -496,7 +527,9 @@ class Runner:
         ]
         console.field("mutants", f"{len(combined)}   {'  '.join(counts)}" if counts else "none", 8)
         percent = None if score is None else score * 100
-        console.line(f"  {console.paint('mutation score', BOLD)} {console.score(percent)}{self.threshold_note(percent)}")
+        console.line(
+            f"  {console.paint('mutation score', BOLD)} {console.score(percent)}{self.threshold_note(percent)}"
+        )
         report_dir = self.options.report_dir
         console.field("html", str(report_dir / "index.html"), 8)
         console.field("markdown", str(report_dir / "summary.md"), 8)
@@ -539,8 +572,11 @@ class Runner:
         if not tests:
             raise StrainError("no tests selected")
         self.console.step(f"selected {plural(len(tests), 'test')}: {', '.join(tests)}")
-        with EventLog(self.options.report_dir / "events.jsonl", self.out if self.options.ui is UiMode.JSON else None,
-                      self.options.resume) as events:
+        with EventLog(
+            self.options.report_dir / "events.jsonl",
+            self.out if self.options.ui is UiMode.JSON else None,
+            self.options.resume,
+        ) as events:
             if self.options.resume:
                 self.console.step(f"resuming: {plural(len(events.previous_results()), 'earlier result')} reused")
             combined = combine(self.run_tests(tests, events))

@@ -4,14 +4,21 @@ import base64
 import hashlib
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 
+def _nothing() -> None:
+    pass
+
+
 class Journal:
-    def __init__(self, directory: Path) -> None:
+    """Calls `before_write` before every write to a source, so the caller can order the write after a build."""
+
+    def __init__(self, directory: Path, before_write: Callable[[], None] = _nothing) -> None:
         self.directory = directory
+        self.before_write = before_write
 
     def recover(self) -> list[Path]:
         if not self.directory.is_dir():
@@ -30,16 +37,20 @@ class Journal:
         original = path.read_bytes()
         entry = self._record(path, original)
         try:
-            path.write_bytes(content)
+            self._write(path, content)
             yield
         finally:
-            path.write_bytes(original)
+            self._write(path, original)
             entry.unlink(missing_ok=True)
+
+    def _write(self, path: Path, content: bytes) -> None:
+        self.before_write()
+        path.write_bytes(content)
 
     def _record(self, path: Path, original: bytes) -> Path:
         self.directory.mkdir(parents=True, exist_ok=True)
         resolved = str(path.resolve())
-        entry = self.directory / f"{hashlib.sha1(resolved.encode()).hexdigest()}.json"
+        entry = self.directory / f"{hashlib.sha1(resolved.encode(), usedforsecurity=False).hexdigest()}.json"
         temporary = entry.with_suffix(".tmp")
         temporary.write_text(json.dumps({"path": resolved, "original": base64.b64encode(original).decode()}))
         os.replace(temporary, entry)

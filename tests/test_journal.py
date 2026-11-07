@@ -36,9 +36,18 @@ class JournalTest(unittest.TestCase):
 
         restored = Journal(self.root / "journal").recover()
 
-        self.assertEqual(restored, [self.source])
+        self.assertEqual(restored, [self.source.resolve()])
         self.assertEqual(self.source.read_bytes(), b"int f() { return 1 + 2; }\n")
         self.assertEqual(list((self.root / "journal").iterdir()), [])
+
+    def test_every_write_is_announced_before_it_happens(self) -> None:
+        contents: list[bytes] = []
+        journal = Journal(self.root / "journal", lambda: contents.append(self.source.read_bytes()))
+
+        with journal.mutated(self.source, b"mutated"):
+            pass
+
+        self.assertEqual(contents, [b"int f() { return 1 + 2; }\n", b"mutated"])
 
     def test_recover_with_no_journal_is_a_no_op(self) -> None:
         self.assertEqual(Journal(self.root / "missing").recover(), [])

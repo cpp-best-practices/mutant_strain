@@ -362,7 +362,9 @@ class Dashboard:
         if not self.queue:
             return [self.paint("  no mutants planned yet", DIM)]
         start = window_start(self.current or 0, len(self.queue), rows)
-        lines = [self.queue_line(index, self.queue[index]) for index in range(start, min(len(self.queue), start + rows))]
+        lines = [
+            self.queue_line(index, self.queue[index]) for index in range(start, min(len(self.queue), start + rows))
+        ]
         if rows < QUEUE_MARKER_ROWS:
             return lines
         hidden_after = len(self.queue) - (start + rows)
