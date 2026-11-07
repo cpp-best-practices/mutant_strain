@@ -6,6 +6,7 @@ from pathlib import Path
 from strain.cli import build_parser, options_from_arguments
 from strain.console import UiMode
 from strain.mutators import Engine
+from strain.runner import Strategy
 from strain.safety_nets import Level
 
 
@@ -53,6 +54,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.exclude, None)
         self.assertEqual(options.since, None)
         self.assertFalse(options.skip_killed)
+        self.assertIs(options.strategy, Strategy.PER_TEST)
         self.assertIsNone(options.safety_nets)
         self.assertIsNone(options.threshold)
         self.assertFalse(options.strict)
@@ -86,8 +88,13 @@ class RunOptionsTest(unittest.TestCase):
             with self.subTest(engine=engine):
                 self.assertIs(parse("--engine", str(engine)).engine, engine)
 
+    def test_every_strategy_from_the_readme(self) -> None:
+        for strategy in Strategy:
+            with self.subTest(strategy=strategy):
+                self.assertIs(parse("--strategy", str(strategy)).strategy, strategy)
+
     def test_backends_that_do_not_exist_yet_are_rejected(self) -> None:
-        for argv in (["--engine", "clang"], ["--coverage", "llvm-cov"], ["--strategy", "per-mutant"]):
+        for argv in (["--engine", "clang"], ["--coverage", "llvm-cov"], ["--strategy", "per-file"]):
             with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     parse(*argv)
