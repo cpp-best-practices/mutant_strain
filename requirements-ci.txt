@@ -129,9 +129,9 @@ iniconfig==2.3.1 \
     --hash=sha256:67f4b9c50da0dedf52af349e7749a80a9057a5031199791b906c3bb3ae878960 \
     --hash=sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7
     # via pytest
-lizard==1.25.0 \
-    --hash=sha256:e37e0da72be4fd4a254f511470af2b2f6800128879844b2844695641baa83112 \
-    --hash=sha256:e82fc8ad93a4c9025f7dad9428bdcfaa8caedfb4358a8ea5860de35a3794626f
+lizard==1.25.1 \
+    --hash=sha256:3513ce263d17ed580f8efa202658b02c684d5da2b39ef40c7663971be822a9d6 \
+    --hash=sha256:789e7103875cb15aac273e1701cd72d4b9d5fa521790e258fe071dbf79dbc4ee
     # via -r requirements-ci.in
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
