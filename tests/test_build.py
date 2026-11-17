@@ -11,7 +11,10 @@ from strain.build import (
     CompilationDatabase,
     CompilerIdentity,
     build,
+    build_command,
     cmake_is_true,
+    generator_warning,
+    parallel_jobs,
     read_cmake_cache,
     read_cxx_compiler,
     target_artifacts,
@@ -127,6 +130,40 @@ class CoverageFlagsTest(unittest.TestCase):
     def test_source_based_coverage(self) -> None:
         self.assertTrue(compile_command("-fprofile-instr-generate", "-fcoverage-mapping").has_source_based_coverage())
         self.assertFalse(compile_command("--coverage").has_source_based_coverage())
+
+
+class GeneratorTest(unittest.TestCase):
+    def test_ninja_builds_need_no_warning(self) -> None:
+        self.assertIsNone(generator_warning({"CMAKE_GENERATOR": "Ninja"}))
+        self.assertIsNone(generator_warning({"CMAKE_GENERATOR": "Ninja Multi-Config"}))
+
+    def test_other_generators_are_warned_about_with_the_fix(self) -> None:
+        warning = generator_warning({"CMAKE_GENERATOR": "Unix Makefiles"})
+        assert warning is not None
+        self.assertIn("Unix Makefiles", warning)
+        self.assertIn("-G Ninja", warning)
+
+    def test_makefile_builds_run_one_job_per_cpu(self) -> None:
+        self.assertEqual(parallel_jobs({"CMAKE_GENERATOR": "Unix Makefiles"}, {}, 8), 8)
+        self.assertEqual(parallel_jobs({"CMAKE_GENERATOR": "MinGW Makefiles"}, {}, 4), 4)
+
+    def test_generators_that_parallelize_on_their_own_are_left_alone(self) -> None:
+        self.assertIsNone(parallel_jobs({"CMAKE_GENERATOR": "Ninja"}, {}, 8))
+        self.assertIsNone(parallel_jobs({"CMAKE_GENERATOR": "NMake Makefiles"}, {}, 8))
+        self.assertIsNone(parallel_jobs({}, {}, 8))
+
+    def test_an_explicit_parallel_level_wins(self) -> None:
+        cache = {"CMAKE_GENERATOR": "Unix Makefiles"}
+        self.assertIsNone(parallel_jobs(cache, {"CMAKE_BUILD_PARALLEL_LEVEL": "2"}, 8))
+        self.assertIsNone(parallel_jobs(cache, {"MAKEFLAGS": "-j3"}, 8))
+        self.assertIsNone(parallel_jobs(cache, {"MAKEFLAGS": "--jobs=3"}, 8))
+        self.assertEqual(parallel_jobs(cache, {"MAKEFLAGS": "-k"}, 8), 8)
+
+    def test_build_command_passes_the_job_count(self) -> None:
+        self.assertEqual(
+            build_command(Path("b"), "t", jobs=6), ["cmake", "--build", "b", "--target", "t", "--parallel", "6"]
+        )
+        self.assertEqual(build_command(Path("b")), ["cmake", "--build", "b"])
 
 
 class BuildFolderTest(unittest.TestCase):

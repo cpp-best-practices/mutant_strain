@@ -80,10 +80,44 @@ class CompilationDatabase:
         return self._by_file.get(file.resolve())
 
 
-def build_command(build_dir: Path, target: str | None = None) -> list[str]:
+def _generator(cache: Mapping[str, str]) -> str:
+    return cache.get("CMAKE_GENERATOR", "")
+
+
+def generator_warning(cache: Mapping[str, str]) -> str | None:
+    """Why the build folder's generator slows every mutant's rebuild, or None for Ninja, which rebuilds fastest."""
+    generator = _generator(cache)
+    if generator.startswith("Ninja"):
+        return None
+    return (
+        f"the build folder uses the {generator or 'unknown'} generator; each mutant rebuilds faster with Ninja "
+        "(reconfigure a fresh build folder with -G Ninja)"
+    )
+
+
+def _sets_make_jobs(makeflags: str) -> bool:
+    return any(flag.startswith(("-j", "--jobs")) for flag in makeflags.split())
+
+
+def parallel_jobs(cache: Mapping[str, str], environ: Mapping[str, str], cpu_count: int | None) -> int | None:
+    """The `--parallel` level for a make build that would otherwise build serially, or None to leave it alone.
+
+    Respects a level the user chose with `CMAKE_BUILD_PARALLEL_LEVEL` or `MAKEFLAGS`.
+    """
+    generator = _generator(cache)
+    if not generator.endswith("Makefiles") or generator.startswith("NMake"):
+        return None
+    if "CMAKE_BUILD_PARALLEL_LEVEL" in environ or _sets_make_jobs(environ.get("MAKEFLAGS", "")):
+        return None
+    return cpu_count
+
+
+def build_command(build_dir: Path, target: str | None = None, jobs: int | None = None) -> list[str]:
     command = ["cmake", "--build", str(build_dir)]
     if target is not None:
         command += ["--target", target]
+    if jobs is not None:
+        command += ["--parallel", str(jobs)]
     return command
 
 
@@ -91,13 +125,22 @@ def _discard(line: str) -> None:
     pass
 
 
-def build(build_dir: Path, target: str | None = None, on_output: Callable[[str], None] = _discard) -> bool:
+def build(
+    build_dir: Path,
+    target: str | None = None,
+    on_output: Callable[[str], None] = _discard,
+    jobs: int | None = None,
+) -> bool:
     """Builds `target` and what it depends on, or the whole build folder when there is no target.
 
     Passes each line the build prints to `on_output` as it arrives.
     """
     with subprocess.Popen(
-        build_command(build_dir, target), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+        build_command(build_dir, target, jobs),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
     ) as process:
         try:
             for line in process.stdout or ():

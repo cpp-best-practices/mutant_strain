@@ -19,6 +19,8 @@ from .build import (
     Target,
     build,
     build_command,
+    generator_warning,
+    parallel_jobs,
     read_cmake_cache,
     read_cxx_compiler,
     target_artifacts,
@@ -205,6 +207,7 @@ class Runner:
         self.test_targets: dict[str, Target] = {}
         self.build_is_mutated = False
         self.coverage_verified = False
+        self.build_jobs: int | None = None
 
     def show_banner(self) -> None:
         console = self.console
@@ -214,9 +217,9 @@ class Runner:
         console.field("reports", str(self.options.report_dir), 7)
 
     def build(self, target: str | None = None) -> bool:
-        self.console.build_started(shlex.join(build_command(Path(short_path(self.build_dir)), target)))
+        self.console.build_started(shlex.join(build_command(Path(short_path(self.build_dir)), target, self.build_jobs)))
         try:
-            return build(self.build_dir, target, self.console.build_output)
+            return build(self.build_dir, target, self.console.build_output, self.build_jobs)
         finally:
             self.build_clock.build_finished()
 
@@ -241,6 +244,7 @@ class Runner:
         self.console.step(f"compilation database: {plural(len(commands), 'project translation unit')}")
         self.check_prerequisites(commands)
         self.check_safety_nets(commands)
+        self.check_generator()
         self.engine = self.resolve_engine()
         self.build_or_fail(
             f"building {self.build_dir}",
@@ -255,6 +259,15 @@ class Runner:
             self.console.step(
                 f"--since {self.options.since}: {plural(changed, 'changed line')} in {plural(len(self.since), 'file')}"
             )
+
+    def check_generator(self) -> None:
+        cache = read_cmake_cache(self.build_dir)
+        warning = generator_warning(cache)
+        if warning is not None:
+            self.console.warn(warning)
+        self.build_jobs = parallel_jobs(cache, os.environ, os.cpu_count())
+        if self.build_jobs is not None:
+            self.console.step(f"building with --parallel {self.build_jobs}")
 
     def load_build_cache(self) -> None:
         """Loads the mutants earlier runs found to break the build at this commit, with this build configuration."""
