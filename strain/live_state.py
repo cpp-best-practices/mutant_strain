@@ -14,6 +14,7 @@ from .coverage import LineCoverage
 from .mutators import Mutant
 from .report import FileScore, action_items, file_scores
 from .results import DETECTED_STATES, CombinedResult, MutantResult, MutantState, combine, mutation_score
+from .safety_nets import RelaxedSafetyNet, SafetyNet
 
 RUNNING = "running"
 PENDING = "pending"
@@ -121,6 +122,9 @@ class LiveState:
         self.waiting = False
         self.stopping = False
         self.done = False
+        # None until the safety nets are checked; then the failing nets the run went on without, and the rest.
+        self.relaxed_nets: list[RelaxedSafetyNet] | None = None
+        self.holding_nets: list[SafetyNet] = []
         self._init_progress()
 
     def _init_progress(self) -> None:
@@ -236,6 +240,16 @@ class LiveState:
         with self.lock:
             self.status = text.strip()
             self._changed()
+
+    def set_safety_nets(self, relaxed: Sequence[RelaxedSafetyNet], holding: Sequence[SafetyNet]) -> None:
+        with self.lock:
+            self.relaxed_nets = list(relaxed)
+            self.holding_nets = list(holding)
+            self._changed()
+
+    def bug_hiding_nets(self) -> list[RelaxedSafetyNet]:
+        """The relaxed nets without which a mutant that breaks the code can survive."""
+        return [failure for failure in self.relaxed_nets or [] if failure.hides_bugs]
 
     def set_flag(self, name: str, value: bool) -> None:
         with self.lock:

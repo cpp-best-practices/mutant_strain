@@ -9,6 +9,7 @@ from typing import TextIO
 from .coverage import LineCoverage
 from .mutators import Mutant
 from .results import MutantResult, MutantState
+from .safety_nets import RelaxedSafetyNet, SafetyNet
 
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -150,6 +151,9 @@ class Console:
 
     def build_started(self, command: str) -> None:
         pass
+
+    def safety_nets_checked(self, relaxed: Sequence[RelaxedSafetyNet], holding: Sequence[SafetyNet]) -> None:
+        """The safety nets that fail but did not stop the run, and those that hold; the lines show them already."""
 
     def build_output(self, line: str) -> None:
         pass

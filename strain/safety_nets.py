@@ -2,6 +2,7 @@
 
 import enum
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .build import CompileCommand, cmake_is_true
@@ -63,12 +64,34 @@ EXPLANATIONS: dict[SafetyNet, str] = {
 }
 
 
+def fix(net: SafetyNet) -> str:
+    """How to put `net` back, the part of its explanation before the colon."""
+    return EXPLANATIONS[net].partition(": ")[0]
+
+
+def why(net: SafetyNet) -> str:
+    """What goes wrong without `net`, the part of its explanation after the colon."""
+    return EXPLANATIONS[net].partition(": ")[2]
+
+
+def where_missing(files: Sequence[Path]) -> str:
+    return f"fails in {len(files)} translation unit(s), e.g. {files[0]}"
+
+
+def where_build_wide(evidence: str) -> str:
+    return f"fails for the whole build ({evidence})"
+
+
+def describe(net: SafetyNet, where: str) -> str:
+    return f"safety net {net} {where}; {EXPLANATIONS[net]}"
+
+
 def describe_missing(net: SafetyNet, files: Sequence[Path]) -> str:
-    return f"safety net {net} fails in {len(files)} translation unit(s), e.g. {files[0]}; {EXPLANATIONS[net]}"
+    return describe(net, where_missing(files))
 
 
 def describe_build_wide(net: SafetyNet, evidence: str) -> str:
-    return f"safety net {net} fails for the whole build ({evidence}); {EXPLANATIONS[net]}"
+    return describe(net, where_build_wide(evidence))
 
 
 class Level(enum.StrEnum):
@@ -89,6 +112,55 @@ DEFAULT_LEVELS: dict[SafetyNet, Level] = {
     SafetyNet.UNITY_BUILD: Level.WARN,
     SafetyNet.LTO: Level.WARN,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class RelaxedSafetyNet:
+    """A safety net that fails, but whose configured level let the run go on: what that costs and how to fix it."""
+
+    net: SafetyNet
+    level: Level
+    where: str
+
+    @property
+    def default(self) -> Level:
+        return DEFAULT_LEVELS[self.net]
+
+    @property
+    def hides_bugs(self) -> bool:
+        """Whether a mutant that breaks the code can survive without this net, which is why it errors by default."""
+        return self.default is Level.ERROR
+
+    @property
+    def fix(self) -> str:
+        return fix(self.net)
+
+    @property
+    def why(self) -> str:
+        return why(self.net)
+
+    @property
+    def message(self) -> str:
+        return describe(self.net, self.where)
+
+
+def classify_failures(
+    failures: Mapping[SafetyNet, str], levels: Mapping[SafetyNet, Level]
+) -> tuple[list[str], list[RelaxedSafetyNet]]:
+    """The failing nets (net to where it fails) that stop the run, as messages, and those the levels let pass.
+
+    Nets come in declaration order, so the ones that hide bugs come before the ones that cost precision or speed.
+    """
+    errors: list[str] = []
+    relaxed: list[RelaxedSafetyNet] = []
+    for net in SafetyNet:
+        if net not in failures:
+            continue
+        if levels[net] is Level.ERROR:
+            errors.append(describe(net, failures[net]))
+        else:
+            relaxed.append(RelaxedSafetyNet(net, levels[net], failures[net]))
+    return errors, relaxed
 
 
 def _sanitizers(arguments: Sequence[str]) -> set[str]:

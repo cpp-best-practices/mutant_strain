@@ -97,11 +97,13 @@ Textual installed, it warns and prints plain output instead. Use the keyboard or
 | `1` Run | The mutated code as a highlighted diff, the mutant queue with each result and time, findings and the build log |
 | `2` Survivors | Each survivor with its coverage, the tests it survived, a hint and its source, and the score of each file |
 | `3` Mutants | Every mutant so far, filtered by state, with the same details |
-| `4` Stats | Scores by file, operator and test, and the slowest mutants |
+| `4` Stats | The [safety nets](#safety-nets) the configuration let fail, why each matters and how to fix it; scores by file, operator and test; the slowest mutants |
 | `5` Log | The full console output |
 
 Above the views, the header shows the score with its history, the totals, the elapsed time and an estimate of the time
-left. Under it, a bar has one cell per mutant, colored by its result: hover to name a mutant, click to show it in the
+left. When a safety net fails but its level is `warn` or `ignore`, a `! N safety nets off` badge appears there; click it
+for the details. It is red when one of those nets errors by default, because then a mutant that breaks the code can
+survive, and each survivor's details carry the same caution. Under it, a bar has one cell per mutant, colored by its result: hover to name a mutant, click to show it in the
 queue.
 
 | Key | Does |

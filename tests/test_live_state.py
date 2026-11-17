@@ -11,6 +11,7 @@ from strain.live_state import (
 )
 from strain.mutators import Mutant
 from strain.results import MutantResult, MutantState, SurvivorKind
+from strain.safety_nets import Level, RelaxedSafetyNet, SafetyNet
 
 SOURCE = "int clamp(int a, int b)\n{\n    if (a < b)\n        return a;\n    return b;\n}\n"
 MUTANT = Mutant("src/clamp.cpp", 3, 11, SOURCE.index("<"), "ror", "<", "<=")
@@ -156,6 +157,22 @@ class LiveStateTest(unittest.TestCase):
         self.assertEqual(self.state.version, version + 2)
         self.assertEqual(self.state.phase(), "")
         self.assertEqual(self.state.log, ["✓ step"])
+
+
+class SafetyNetStateTest(unittest.TestCase):
+    def test_the_relaxed_nets_that_hide_bugs_are_told_apart(self) -> None:
+        state = LiveState(FakeClock())
+        self.assertIsNone(state.relaxed_nets)
+        self.assertEqual(state.bug_hiding_nets(), [])
+        asan = RelaxedSafetyNet(SafetyNet.ASAN, Level.WARN, "fails in 1 translation unit(s), e.g. a.cpp")
+        lto = RelaxedSafetyNet(
+            SafetyNet.LTO, Level.IGNORE, "fails for the whole build (CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON)"
+        )
+        version = state.version
+        state.set_safety_nets([asan, lto], [SafetyNet.UBSAN])
+        self.assertEqual(state.bug_hiding_nets(), [asan])
+        self.assertEqual(state.holding_nets, [SafetyNet.UBSAN])
+        self.assertGreater(state.version, version)
 
 
 if __name__ == "__main__":

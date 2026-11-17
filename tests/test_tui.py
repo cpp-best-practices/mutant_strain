@@ -15,6 +15,7 @@ HAS_TEXTUAL = importlib.util.find_spec("textual") is not None
 if HAS_TEXTUAL:
     from textual.widgets import DataTable, Static, TabbedContent
 
+    from strain.safety_nets import Level, RelaxedSafetyNet, SafetyNet
     from strain.tui import CodeView, MutationMap, RunHeader, StrainApp, TuiConsole, diff_view
 
 SOURCE = "int clamp(int a, int b)\n{\n    if (a < b)\n        return a;\n    return b;\n}\n"
@@ -294,6 +295,78 @@ class TuiConsoleTest(unittest.TestCase):
         threading.Timer(0.5, console.request_stop).start()
         with self.assertRaises(KeyboardInterrupt):
             console.run(work)
+
+
+ASAN_OFF = "fails in 2 translation unit(s), e.g. src/clamp.cpp"
+LTO_ON = "fails for the whole build (CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON)"
+
+
+@unittest.skipUnless(HAS_TEXTUAL, "the TUI needs Textual")
+class SafetyNetViewTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.console = make_console()
+        self.app = StrainApp(self.console)
+
+    def relax(self, *failures: "RelaxedSafetyNet") -> None:
+        relaxed = {failure.net for failure in failures}
+        self.console.safety_nets_checked(list(failures), [net for net in SafetyNet if net not in relaxed])
+
+    async def settle(self, pilot: object) -> None:
+        self.app.refresh_from_state()
+        await pilot.pause()  # type: ignore[attr-defined]
+
+    async def test_stats_explain_each_relaxed_net_and_why_it_mattered(self) -> None:
+        async with self.app.run_test(size=SIZE) as pilot:
+            self.relax(
+                RelaxedSafetyNet(SafetyNet.ASAN, Level.WARN, ASAN_OFF),
+                RelaxedSafetyNet(SafetyNet.LTO, Level.IGNORE, LTO_ON),
+            )
+            await self.settle(pilot)
+            report = text_of(self.app.query_one("#safety", Static).content)
+            self.assertIn("asan is off, so a mutant that breaks the code can still pass the tests", report)
+            self.assertIn("asan  set to warn, so the run went on with a warning; by default it stops the run", report)
+            self.assertIn("lto  set to ignore, so the run went on without a warning", report)
+            self.assertIn("fails      in 2 translation unit(s), e.g. src/clamp.cpp", report)
+            self.assertIn("why        without AddressSanitizer an out-of-bounds", report)
+            self.assertIn("fix        add -fsanitize=address", report)
+            self.assertIn("✔ hold: ubsan", report)
+            self.assertEqual(self.app.query_one("#safety-box").border_title, "Safety nets: 2 off")
+
+    async def test_nets_that_only_cost_speed_say_survivors_still_count(self) -> None:
+        async with self.app.run_test(size=SIZE) as pilot:
+            self.relax(RelaxedSafetyNet(SafetyNet.LTO, Level.WARN, LTO_ON))
+            await self.settle(pilot)
+            report = text_of(self.app.query_one("#safety", Static).content)
+            self.assertIn("survivors still point at weak tests", report)
+
+    async def test_every_net_holding_is_one_line(self) -> None:
+        async with self.app.run_test(size=SIZE) as pilot:
+            self.relax()
+            await self.settle(pilot)
+            self.assertIn(
+                "✔ every safety net holds: asan, ubsan", text_of(self.app.query_one("#safety", Static).content)
+            )
+            self.assertNotIn("safety net", text_of(self.app.query_one(RunHeader).content))
+
+    async def test_the_header_badge_counts_relaxed_nets_and_opens_their_report(self) -> None:
+        async with self.app.run_test(size=SIZE) as pilot:
+            self.relax(RelaxedSafetyNet(SafetyNet.ASAN, Level.IGNORE, ASAN_OFF))
+            await self.settle(pilot)
+            header = self.app.query_one(RunHeader)
+            self.assertIn("! 1 safety net off", text_of(header.content))
+            await pilot.click(RunHeader, offset=(header.safety_columns.start, 0))
+            await pilot.pause()
+            self.assertEqual(self.app.query_one(TabbedContent).active, "stats")
+
+    async def test_survivors_carry_a_caution_while_a_bug_hiding_net_is_off(self) -> None:
+        async with self.app.run_test(size=SIZE) as pilot:
+            self.relax(RelaxedSafetyNet(SafetyNet.ASAN, Level.WARN, ASAN_OFF))
+            run_two_mutants(self.console)
+            await self.settle(pilot)
+            await pilot.press("2")
+            await pilot.pause()
+            detail = text_of(self.app.query_one("#survivor-detail", Static).content)
+            self.assertIn("caution    asan off: this mutant may survive only because of that", detail)
 
 
 if __name__ == "__main__":

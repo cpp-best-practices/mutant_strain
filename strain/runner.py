@@ -71,8 +71,9 @@ from .safety_nets import (
     Level,
     SafetyNet,
     build_wide_problems,
-    describe_build_wide,
-    describe_missing,
+    classify_failures,
+    where_build_wide,
+    where_missing,
     missing_safety_nets,
     resolve_levels,
 )
@@ -327,28 +328,25 @@ class Runner:
         self.console.step("coverage instrumentation is enabled and gcov matches the compiler")
 
     def safety_net_failures(self, commands: Sequence[CompileCommand]) -> dict[SafetyNet, str]:
+        """Each failing safety net and where it fails."""
         build_wide = build_wide_problems(read_cmake_cache(self.build_dir), self.database.commands)
-        failures = {net: describe_build_wide(net, evidence) for net, evidence in build_wide.items()}
-        failures.update((net, describe_missing(net, files)) for net, files in missing_safety_nets(commands).items())
+        failures = {net: where_build_wide(evidence) for net, evidence in build_wide.items()}
+        failures.update((net, where_missing(files)) for net, files in missing_safety_nets(commands).items())
         return failures
 
     def check_safety_nets(self, commands: Sequence[CompileCommand]) -> None:
         levels = resolve_levels(self.config.safety_nets, self.options.safety_nets)
         missing = self.safety_net_failures(commands)
-        errors: list[str] = []
-        for net in SafetyNet:
-            if net not in missing:
-                continue
-            message = missing[net]
-            if levels[net] is Level.ERROR:
-                errors.append(message)
-            elif levels[net] is Level.WARN:
-                self.console.warn(message)
+        errors, relaxed = classify_failures(missing, levels)
+        for failure in relaxed:
+            if failure.level is Level.WARN:
+                self.console.warn(failure.message)
             else:
-                self.console.note(f"safety net {net} is missing but ignored by configuration")
+                self.console.note(f"safety net {failure.net} is missing but ignored by configuration")
         if errors:
             raise StrainError("\n".join([*errors, "rebuild with the flags from the README or pass --safety-nets=warn"]))
         present = [net for net in SafetyNet if net not in missing]
+        self.console.safety_nets_checked(relaxed, present)
         if present:
             self.console.step(f"safety nets that hold for the whole build: {', '.join(present)}")
 

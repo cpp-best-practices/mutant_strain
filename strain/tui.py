@@ -43,6 +43,7 @@ from .live_state import (
 from .mutators import Mutant, apply_mutant, describe_mutant
 from .report import format_score, hint
 from .results import CombinedResult, MutantResult, MutantState
+from .safety_nets import Level, RelaxedSafetyNet, SafetyNet
 
 REFRESH_SECONDS = 0.1
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -117,7 +118,13 @@ TABLES = {
         (("time", "time"), ("state", "state"), ("where", "location"), ("change", "change")),
     ),
 }
-PANEL_TITLES = {"#findings-box": "Findings", "#build": "Build log", "#transcript": "Log", "#code": "Mutant"}
+PANEL_TITLES = {
+    "#safety-box": "Safety nets",
+    "#findings-box": "Findings",
+    "#build": "Build log",
+    "#transcript": "Log",
+    "#code": "Mutant",
+}
 
 
 def score_style(score: float | None) -> str:
@@ -232,6 +239,11 @@ def mutant_details(state: LiveState, entry: CombinedResult) -> RenderableType:
     detail_row(facts, "operator", Text.assemble(f"{mutant.operator}  ", change(mutant)))
     detail_row(facts, "function", entry.function or "unknown")
     detail_row(facts, "coverage", execution_summary(mutant.line, context.executions))
+    hiding = state.bug_hiding_nets()
+    if survived and hiding:
+        names = ", ".join(failure.net for failure in hiding)
+        caution = f"{names} off: this mutant may survive only because of that; 4 Stats explains"
+        detail_row(facts, "caution", Text(caution, style="bold red"))
     if survived:
         kind = "" if entry.survivor is None else f"{entry.survivor} "
         detail_row(facts, str(MutantState.SURVIVED), f"{kind}under {', '.join(entry.covered_by)}")
@@ -242,6 +254,61 @@ def mutant_details(state: LiveState, entry: CombinedResult) -> RenderableType:
     if duration is not None:
         detail_row(facts, "time", f"{duration:.2f}s")
     return Group(facts, Text(""), diff_view(context.source, mutant, DETAIL_CONTEXT))
+
+
+def safety_badge(state: LiveState) -> Text:
+    """How many failing safety nets the run went on without; red when one of them lets broken mutants survive."""
+    relaxed = state.relaxed_nets or []
+    if not relaxed:
+        return Text("")
+    style = "bold white on red" if state.bug_hiding_nets() else "bold black on yellow"
+    return Text(f" ! {plural(len(relaxed), 'safety net')} off ", style=style)
+
+
+def relaxed_net_view(failure: RelaxedSafetyNet) -> RenderableType:
+    """One relaxed net: how the configuration let it pass, where it fails, why that matters and how to fix it."""
+    went_on = "with a warning" if failure.level is Level.WARN else "without a warning"
+    heading = Text.assemble(
+        ("✗ ", "bold red" if failure.hides_bugs else "bold yellow"),
+        (str(failure.net), "bold"),
+        f"  set to {failure.level}, so the run went on {went_on}",
+    )
+    if failure.hides_bugs:
+        heading.append("; by default it stops the run", style="red")
+    facts = Table.grid(padding=(0, 1))
+    facts.add_column(min_width=DETAIL_LABEL_WIDTH, no_wrap=True)
+    facts.add_column()
+    detail_row(facts, "fails", failure.where.removeprefix("fails "))
+    detail_row(facts, "why", Text(failure.why, style="yellow" if failure.hides_bugs else ""))
+    detail_row(facts, "fix", Text(failure.fix, style="cyan"))
+    return Group(heading, facts)
+
+
+def safety_report(state: LiveState) -> RenderableType:
+    """The safety nets the configuration let fail, what that means for the results, and the nets that hold."""
+    if state.relaxed_nets is None:
+        return Text("strain checks the safety nets while it prepares the run", style="dim")
+    holding = Text.assemble(("✔ hold: ", "green"), ", ".join(state.holding_nets) or "none")
+    if not state.relaxed_nets:
+        return Text.assemble(("✔ every safety net holds: ", "bold green"), ", ".join(state.holding_nets))
+    hiding = state.bug_hiding_nets()
+    if hiding:
+        names = ", ".join(failure.net for failure in hiding)
+        summary = Text(
+            f"{names} {'is' if len(hiding) == 1 else 'are'} off, so a mutant that breaks the code can still pass the "
+            "tests: some survivors may point at the build rather than at a weak test. Fix the build before writing "
+            "tests for them.",
+            style="bold red",
+        )
+    else:
+        summary = Text(
+            "These nets cost coverage precision or build speed, not correctness: survivors still point at weak tests.",
+            style="yellow",
+        )
+    views: list[RenderableType] = [summary]
+    for failure in state.relaxed_nets:
+        views += [Text(""), relaxed_net_view(failure)]
+    return Group(*views, Text(""), holding)
 
 
 def run_badge(state: LiveState, paused: bool) -> Text:
@@ -292,15 +359,31 @@ def run_scores(state: LiveState) -> Text:
 
 
 class RunHeader(Static):
-    """The run's position, its state, the score and its history, and how long the run has taken and will take."""
+    """The run's position, its state, the score and its history, and how long the run has taken and will take.
+
+    Clicking the safety net badge shows why the nets it counts matter.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.safety_columns = range(0)
 
     def render_state(self, state: LiveState, paused: bool) -> RenderableType:
+        safety = safety_badge(state)
+        badge = run_badge(state, paused)
+        # The badges sit at the right edge, inside one column of padding.
+        end = self.size.width - 1 - len(badge) - (1 if safety else 0)
+        self.safety_columns = range(end - len(safety), end)
         grid = Table.grid(expand=True)
         grid.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
         grid.add_column(justify="right", no_wrap=True)
-        grid.add_row(run_position(state), run_badge(state, paused))
+        grid.add_row(run_position(state), Text.assemble(safety, " " if safety else "", badge))
         grid.add_row(run_scores(state), run_timing(state))
         return grid
+
+    def on_click(self, event: events.Click) -> None:
+        if event.y == 0 and event.x in self.safety_columns:
+            self.app.show_safety_nets()  # type: ignore[attr-defined]
 
 
 class MutationMap(Widget):
@@ -409,6 +492,8 @@ class StrainApp(App[None]):
     .list #survivor-files { height: auto; max-height: 40%; }
     .details { width: 3fr; padding: 0 1; }
     #filters { height: 2; }
+    #safety-box { height: auto; max-height: 60%; padding: 0 1; }
+    #stats-tables { height: 1fr; }
     .stats-column { width: 1fr; }
     .stats-column DataTable { height: auto; max-height: 50%; }
     DataTable { scrollbar-size-vertical: 1; }
@@ -443,6 +528,8 @@ class StrainApp(App[None]):
         self.pending_toasts: list[str] = []
         self.last_toast = 0.0
         self.announced_finish = False
+        # The safety net report last shown: None before the check, then the list the console reported.
+        self.shown_safety: list[RelaxedSafetyNet] | None = None
         self.state_filter: str | None = None
         self.dirty_tables: set[str] = set()
 
@@ -482,13 +569,16 @@ class StrainApp(App[None]):
                 yield Static(id="mutant-detail")
 
     def compose_stats(self) -> ComposeResult:
-        with TabPane("4 Stats", id="stats"), Horizontal():
-            with Vertical(classes="stats-column"):
-                yield table("stats-files")
-                yield table("stats-operators")
-            with Vertical(classes="stats-column"):
-                yield table("stats-tests")
-                yield table("stats-slowest")
+        with TabPane("4 Stats", id="stats"), Vertical():
+            with VerticalScroll(id="safety-box", classes="panel"):
+                yield Static(id="safety")
+            with Horizontal(id="stats-tables"):
+                with Vertical(classes="stats-column"):
+                    yield table("stats-files")
+                    yield table("stats-operators")
+                with Vertical(classes="stats-column"):
+                    yield table("stats-tests")
+                    yield table("stats-slowest")
 
     def on_mount(self) -> None:
         for table_id, (title, columns) in TABLES.items():
@@ -528,6 +618,7 @@ class StrainApp(App[None]):
                 self.refresh_queue()
                 self.refresh_build_log()
                 self.refresh_transcript()
+                self.refresh_safety_nets()
                 if self.state.results_version != self.seen_results:
                     self.seen_results = self.state.results_version
                     self.refresh_results()
@@ -861,6 +952,28 @@ class StrainApp(App[None]):
         }
         self.query_one(focus[event.pane.id or "run"]).focus()
 
+    def refresh_safety_nets(self) -> None:
+        relaxed = self.state.relaxed_nets
+        if relaxed is self.shown_safety:
+            return
+        self.shown_safety = relaxed
+        self.query_one("#safety", Static).update(safety_report(self.state))
+        box = self.query_one("#safety-box")
+        box.border_title = "Safety nets" if not relaxed else f"Safety nets: {len(relaxed)} off"
+        if relaxed:
+            hiding = self.state.bug_hiding_nets()
+            names = ", ".join(failure.net for failure in relaxed)
+            self.notify(
+                f"{names} off; 4 Stats explains why it matters",
+                title="! Safety nets",
+                severity="error" if hiding else "warning",
+                timeout=6,
+            )
+
+    def show_safety_nets(self) -> None:
+        self.query_one(TabbedContent).active = "stats"
+        self.query_one("#safety-box").scroll_home(animate=False)
+
     def show_queue_entry(self, index: int) -> None:
         self.query_one(TabbedContent).active = "run"
         self.following = False
@@ -1063,6 +1176,9 @@ class TuiConsole(Console):
 
     def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
         self.live.record_result(result, source, line)
+
+    def safety_nets_checked(self, relaxed: Sequence[RelaxedSafetyNet], holding: Sequence[SafetyNet]) -> None:
+        self.live.set_safety_nets(relaxed, holding)
 
     def build_started(self, command: str) -> None:
         self.check_stop()
