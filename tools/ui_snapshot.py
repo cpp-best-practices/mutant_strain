@@ -35,6 +35,7 @@ KEYS = {
     "home": "\033[H",
     "end": "\033[F",
     "tab": "\t",
+    "shift+tab": "\033[Z",
     "backtab": "\033[Z",
     "enter": "\r",
     "escape": "\033",

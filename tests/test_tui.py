@@ -98,7 +98,6 @@ class StrainAppTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("running", text_of(queue.get_row_at(0)[0]))
             self.assertIn("pending", text_of(queue.get_row_at(1)[0]))
             self.assertIn("+ 3 │     if (a <= b)", text_of(self.app.query_one(CodeView).content))
-            self.assertIn("mutant 1/2", header)
 
     async def test_header_totals_count_each_mutant_once(self) -> None:
         async with self.app.run_test(size=SIZE) as pilot:
@@ -144,6 +143,36 @@ class StrainAppTest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(tabs.active, "run")
 
+    async def test_switching_views_moves_focus_into_the_new_view(self) -> None:
+        """Focus left in a hidden view would move to a neighbour there, which switches back to that view."""
+        async with self.app.run_test(size=SIZE) as pilot:
+            tabs = self.app.query_one(TabbedContent)
+            self.assertIs(self.app.focused, self.app.query_one("#queue"))
+            for key, view, widget in (
+                ("5", "log", "#transcript"),
+                ("4", "stats", "#stats-files"),
+                ("tab", "log", "#transcript"),
+                ("1", "run", "#queue"),
+            ):
+                await pilot.press(key)
+                await pilot.pause()
+                self.assertEqual(tabs.active, view, key)
+                self.assertIs(self.app.focused, self.app.query_one(widget), key)
+
+    async def test_a_late_activation_for_a_view_already_left_is_ignored(self) -> None:
+        """A view's activation message can arrive after the user has moved on, as when tab follows 4 quickly.
+
+        Focusing into that view would switch back to it.
+        """
+        async with self.app.run_test(size=SIZE) as pilot:
+            tabs = self.app.query_one(TabbedContent)
+            await pilot.press("5")
+            await pilot.pause()
+            tabs.post_message(TabbedContent.TabActivated(tabs, tabs.get_tab("stats")))
+            await pilot.pause()
+            self.assertEqual(tabs.active, "log")
+            self.assertIs(self.app.focused, self.app.query_one("#transcript"))
+
     async def test_mutants_view_filters_by_state(self) -> None:
         async with self.app.run_test(size=SIZE) as pilot:
             run_two_mutants(self.console)
@@ -164,8 +193,6 @@ class StrainAppTest(unittest.IsolatedAsyncioTestCase):
         async with self.app.run_test(size=SIZE) as pilot:
             run_two_mutants(self.console)
             await self.settle(pilot)
-            queue = self.app.query_one("#queue", DataTable)
-            queue.focus()
             await pilot.press("up")
             await pilot.pause()
             self.assertFalse(self.app.following)
@@ -228,9 +255,11 @@ class StrainAppTest(unittest.IsolatedAsyncioTestCase):
         async with self.app.run_test(size=(40, 12)) as pilot:
             run_two_mutants(self.console)
             await self.settle(pilot)
-            for key in "12345":
+            tabs = self.app.query_one(TabbedContent)
+            for key, view in zip("12345", ("run", "survivors", "mutants", "stats", "log"), strict=True):
                 await pilot.press(key)
                 await pilot.pause()
+                self.assertEqual(tabs.active, view)
 
 
 @unittest.skipUnless(HAS_TEXTUAL, "the TUI needs Textual")

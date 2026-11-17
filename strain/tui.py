@@ -93,6 +93,14 @@ SHORT_STATES = {
 STATE_COLUMN_WIDTH = 2 + max(len(SHORT_STATES.get(state, state)) for state in [*MutantState, RUNNING, PENDING])
 MAP_COLORS = {"survived": "red", "detected": "green", "running": "bold cyan", "other": "grey50", "pending": "grey23"}
 VIEWS = ("run", "survivors", "mutants", "stats", "log")
+# The widget each view focuses, so the arrow keys work in it straight away.
+VIEW_FOCUS = {
+    "run": "#queue",
+    "survivors": "#survivor-table",
+    "mutants": "#mutant-table",
+    "stats": "#stats-files",
+    "log": "#transcript",
+}
 MUTANT_COLUMNS = (("state", "state"), ("where", "location"), ("op", "op"), ("change", "change"), ("time", "time"))
 TALLY_COLUMNS = (("name", "file"), ("score", "score"), ("bar", ""), ("mutants", "mutants"), ("survived", "survived"))
 # Each table's columns, as (key, label), and its title.
@@ -924,13 +932,12 @@ class StrainApp(App[None]):
     def open_mutant(self, mutant_id: str) -> None:
         self.state_filter = None
         self.query_one("#filters", Tabs).active = "filter-all"
-        self.query_one(TabbedContent).active = "mutants"
+        self.show_view("mutants")
         with self.state.lock:
             self.refresh_mutants()
             keys = [entry.mutant.id for entry in self.filtered_mutants()]
             if mutant_id in keys:
                 self.query_one("#mutant-table", DataTable).move_cursor(row=keys.index(mutant_id))
-        self.query_one("#mutant-table", DataTable).focus()
 
     def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
         if event.tabs.id != "filters" or event.tab is None:
@@ -941,16 +948,24 @@ class StrainApp(App[None]):
             self.refresh_mutants()
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Fills the newly shown view and, after a click on its tab, focuses it so the arrow keys work there."""
         with self.state.lock:
             self.refresh_active_tables()
-        focus = {
-            "run": "#queue",
-            "survivors": "#survivor-table",
-            "mutants": "#mutant-table",
-            "stats": "#stats-files",
-            "log": "#transcript",
-        }
-        self.query_one(focus[event.pane.id or "run"]).focus()
+        pane = event.pane
+        # The message may arrive after the user has moved on; focusing into that pane would switch back to it.
+        if pane.id != self.query_one(TabbedContent).active:
+            return
+        if self.focused is None or pane not in self.focused.ancestors:
+            self.screen.set_focus(self.query_one(VIEW_FOCUS[pane.id or "run"]))
+
+    def show_view(self, view: str) -> None:
+        """Shows `view` and focuses it in the same step.
+
+        Focus must not stay on a widget in the old view: when that view hides, Textual hands focus to a neighbouring
+        widget there, and a focused widget makes its view the active one again.
+        """
+        self.query_one(TabbedContent).active = view
+        self.screen.set_focus(self.query_one(VIEW_FOCUS[view]))
 
     def refresh_safety_nets(self) -> None:
         relaxed = self.state.relaxed_nets
@@ -971,20 +986,18 @@ class StrainApp(App[None]):
             )
 
     def show_safety_nets(self) -> None:
-        self.query_one(TabbedContent).active = "stats"
+        self.show_view("stats")
         self.query_one("#safety-box").scroll_home(animate=False)
 
     def show_queue_entry(self, index: int) -> None:
-        self.query_one(TabbedContent).active = "run"
+        self.show_view("run")
         self.following = False
-        table = self.query_one("#queue", DataTable)
-        table.move_cursor(row=index)
-        table.focus()
+        self.query_one("#queue", DataTable).move_cursor(row=index)
 
     # Actions.
 
     def action_show_view(self, view: str) -> None:
-        self.query_one(TabbedContent).active = view
+        self.show_view(view)
 
     def action_next_view(self) -> None:
         self.cycle_view(1)
@@ -993,8 +1006,7 @@ class StrainApp(App[None]):
         self.cycle_view(-1)
 
     def cycle_view(self, step: int) -> None:
-        tabs = self.query_one(TabbedContent)
-        tabs.active = VIEWS[(VIEWS.index(tabs.active) + step) % len(VIEWS)]
+        self.show_view(VIEWS[(VIEWS.index(self.query_one(TabbedContent).active) + step) % len(VIEWS)])
 
     def action_follow(self) -> None:
         if self.query_one(TabbedContent).active == "mutants":
