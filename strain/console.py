@@ -1,8 +1,9 @@
 """Human-readable console output: phases, steps, a live status line and colored mutant states."""
 
 import enum
+import importlib.util
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TextIO
 
 from .coverage import LineCoverage
@@ -127,7 +128,11 @@ class Console:
         self.finish()
         print(f"strain: {paint('warning:', BOLD + YELLOW, self.err_color)} {message}", file=self.err, flush=True)
 
-    # Progress hooks for the live dashboard; plain console output shows the same progress as lines.
+    def run(self, work: Callable[[], int]) -> int:
+        """Runs the whole of strain's `work`; the live TUI overrides this to run it beside the TUI."""
+        return work()
+
+    # Progress hooks for the live TUI; plain console output shows the same progress as lines.
     def test_started(self, name: str, number: int, total: int) -> None:
         pass
 
@@ -151,3 +156,16 @@ class Console:
 
     def run_finished(self) -> None:
         pass
+
+
+def create_console(out: TextIO, err: TextIO, mode: UiMode) -> Console:
+    """The Textual TUI for `--ui live` on a terminal; plain console output everywhere else, or without Textual."""
+    if mode is not UiMode.LIVE or not is_terminal(out):
+        return Console(out, err, mode)
+    if importlib.util.find_spec("textual") is None:
+        console = Console(out, err, UiMode.AUTO)
+        console.warn("--ui live needs Textual: pip install 'strain[ui]'; showing plain output instead")
+        return console
+    from .tui import TuiConsole
+
+    return TuiConsole(out, err)

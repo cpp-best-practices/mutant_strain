@@ -57,7 +57,7 @@ def _add_backend_arguments(parser: argparse.ArgumentParser) -> None:
         choices=list(UiMode),
         default=UiMode.AUTO,
         help=(
-            "console output: auto (live progress and color on a terminal), live (full-screen dashboard), "
+            "console output: auto (live progress and color on a terminal), live (full-screen TUI; needs strain[ui]), "
             "log (plain lines) or json (events)"
         ),
     )

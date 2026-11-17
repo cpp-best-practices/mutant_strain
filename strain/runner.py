@@ -27,9 +27,8 @@ from .build import (
 )
 from .build_cache import BuildFailureCache, cache_path
 from .config import CONFIG_FILE, Config, load_config
-from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, plural, score_style
+from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, create_console, plural, score_style
 from .coverage import FileCoverage, GcovCoverage
-from .dashboard import create_console
 from .journal import Journal
 from .mutators import (
     Engine,
@@ -831,6 +830,6 @@ class Runner:
 def run(options: RunOptions, out: TextIO, err: TextIO) -> int:
     runner = Runner(options, out, err)
     try:
-        return runner.run()
+        return runner.console.run(runner.run)
     finally:
         runner.console.finish()
