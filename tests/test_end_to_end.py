@@ -3,6 +3,7 @@ import io
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -98,6 +99,20 @@ SINGLE_TEST_STATES = [
 
 
 OTHER_TESTS_CHECKING_ADD = '#include "sample.hpp"\n\nint main() { return add(1, 1) == 2 ? 0 : 1; }\n'
+
+
+COUNTDOWN_HEADER = "#include <vector>\n\n[[nodiscard]] std::vector<int> countdown(int from);\n"
+# Mutating `-=` to `+=` makes the loop count up instead, appending until memory runs out.
+COUNTDOWN_SOURCE = """#include "sample.hpp"
+
+std::vector<int> countdown(int from)
+{
+  std::vector<int> out;
+  for (int i = from; i != 0; i -= 1) { out.push_back(i); }
+  return out;
+}
+"""
+COUNTDOWN_TEST = '#include "sample.hpp"\n\nint main() { return countdown(3).size() == 3 ? 0 : 1; }\n'
 
 
 def run_strain(*argv: str) -> tuple[int, str, str]:
@@ -527,6 +542,30 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("interrupted after", transcript)
         self.assertEqual(console.finished_runs, 0)
         self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+
+    def run_countdown(self, cxx_flags: str, linker_flags: str, *argv: str) -> None:
+        (self.root / "include" / "sample.hpp").write_text(COUNTDOWN_HEADER)
+        (self.root / "src" / "sample.cpp").write_text(COUNTDOWN_SOURCE)
+        (self.root / "tests" / "sample_tests.cpp").write_text(COUNTDOWN_TEST)
+        (self.root / "tests" / "other_tests.cpp").write_text("int main() { return 0; }\n")
+        configure_project(self.root, self.build_dir, cxx_flags=cxx_flags, linker_flags=linker_flags)
+
+        exit_code, stdout, _ = run_strain(
+            "--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir), "-R", "^sample_tests$", *argv
+        )
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertIn("or stop at 512 MB", stdout)
+        self.assertIn("reached the 512 MB memory limit", stdout)
+        self.assertIn((6, "asr", "+=", "killed_by_resource_limit"), self.mutant_states())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "ASan enforces hard_rss_limit_mb on Linux")
+    def test_a_mutant_that_allocates_forever_stops_at_the_memory_limit_under_asan(self) -> None:
+        self.run_countdown(CXX_FLAGS, LINKER_FLAGS)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux enforces RLIMIT_DATA")
+    def test_a_mutant_that_allocates_forever_stops_at_the_memory_limit_without_asan(self) -> None:
+        self.run_countdown("--coverage", "--coverage", "--safety-nets", "ignore")
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)

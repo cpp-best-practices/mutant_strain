@@ -146,6 +146,7 @@ A mutant that doesn't compile is a `compile_error` for every test, so strain bui
 | --- | --- | --- |
 | `killed` | A test failed | Yes |
 | `killed_by_sanitizer` | ASan or UBSan caught it, the assertions didn't | Yes, flagged |
+| `killed_by_resource_limit` | The test reached its [memory limit](#memory-limit) | Yes |
 | `timeout` | Ran too long | Yes |
 | `survived` | All tests passed | Yes |
 | `skipped_unevaluated` | Operand never evaluated by this test | No |
@@ -154,7 +155,22 @@ A mutant that doesn't compile is a `compile_error` for every test, so strain bui
 
 Survivors are labeled `not_reached` (needs a new test input) or `not_detected` (needs a stronger assertion) when branch coverage is available.
 
-Mutation score = (killed + killed_by_sanitizer + timeout) ÷ (those + survived)
+Mutation score = (killed + killed_by_sanitizer + killed_by_resource_limit + timeout) ÷ (those + survived)
+
+### Memory limit
+
+A mutant such as `i -= 1` → `i += 1` in a loop that appends to a container can use up the machine's memory long before
+the timeout stops it, taking the run, your session or the CI runner down with it. So each test runs with a memory
+limit: by default four times the peak memory its baseline used, and at least 512 MB.
+
+- **ASan programs:** the limit goes through `ASAN_OPTIONS=hard_rss_limit_mb=…`. Your own `ASAN_OPTIONS` come after it,
+  so they win. A data segment limit can't be used here, because ASan reserves terabytes of address space and fails to
+  start under one.
+- **Other programs:** the limit is a data segment limit (`ulimit -d`), which CTest and the test inherit.
+- **Result:** a test that reaches its limit kills the mutant as `killed_by_resource_limit`. Tests would never pass
+  with that mutant in place.
+- **Platforms:** both limits are enforced on Linux. macOS ignores the data segment limit, and ASan there doesn't check
+  the RSS limit, so a runaway mutant runs until its timeout.
 
 ## Safety nets
 
@@ -192,6 +208,7 @@ strain run --safety-nets=warn
 | `--threshold` | | Exit non-zero below this score |
 | `--strict` | off | Abort if any test is excluded |
 | `--max-per-line` | | Cap mutants per source line |
+| `--memory-limit` | 4× the baseline, at least 512 MB | Memory each test may use with a mutant in place, in MB; `0` for no limit. See [Memory limit](#memory-limit) |
 | `--resume` | | Continue an interrupted run |
 | `--all` | off | Show every survivor, not just the top actions |
 

@@ -39,6 +39,8 @@ EVERY_OPTION = (
     "--strict",
     "--max-per-line",
     "3",
+    "--memory-limit",
+    "2048",
     "--resume",
     "--all",
     "--report-dir",
@@ -60,6 +62,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertIsNone(options.threshold)
         self.assertFalse(options.strict)
         self.assertIsNone(options.max_per_line)
+        self.assertIsNone(options.memory_limit)
         self.assertFalse(options.resume)
         self.assertFalse(options.show_all)
         self.assertIs(options.engine, Engine.AUTO)
@@ -77,6 +80,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.threshold, 75.5)
         self.assertTrue(options.strict)
         self.assertEqual(options.max_per_line, 3)
+        self.assertEqual(options.memory_limit, 2048)
         self.assertTrue(options.resume)
         self.assertTrue(options.show_all)
         self.assertEqual(options.report_dir, Path("out"))
@@ -102,6 +106,11 @@ class RunOptionsTest(unittest.TestCase):
             with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit):
                     parse(*argv)
+
+    def test_a_memory_limit_of_zero_turns_it_off_and_a_negative_one_is_rejected(self) -> None:
+        self.assertEqual(parse("--memory-limit", "0").memory_limit, 0)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse("--memory-limit", "-1")
 
 
 if __name__ == "__main__":
