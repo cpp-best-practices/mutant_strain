@@ -503,6 +503,49 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(console.finished_runs, 0)
         self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
 
+    def run_since(self, ref: str) -> tuple[int, str, str]:
+        return run_strain(
+            "--build-dir",
+            str(self.build_dir),
+            "--report-dir",
+            str(self.report_dir),
+            "--since",
+            ref,
+            "--threshold",
+            "80",
+        )
+
+    def test_since_without_changes_says_nothing_was_tested(self) -> None:
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = self.run_since("HEAD")
+
+        # A change that touches no source is not a failure, but it must not read like a clean run.
+        self.assertEqual(exit_code, 0, stdout)
+        reason = "No source line changed since HEAD, so there was nothing to mutate."
+        self.assertIn(reason, stdout)
+        self.assertEqual(
+            (self.report_dir / "summary.md").read_text(),
+            f"## strain mutation testing\n\n**Nothing was mutation tested.** {reason}\n",
+        )
+
+    def test_since_with_only_unexecuted_changes_says_nothing_was_tested(self) -> None:
+        configure_project(self.root, self.build_dir)
+        source = self.root / "src" / "sample.cpp"
+        source.write_text("// a comment\n" + source.read_text())
+        run_checked(
+            "git", "-c", "user.name=s", "-c", "user.email=s@example.com", "commit", "-qam", "comment", cwd=self.root
+        )
+
+        exit_code, stdout, _ = self.run_since("HEAD~1")
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertIn(
+            "**Nothing was mutation tested.** No mutant was generated on the 1 line changed since HEAD~1: "
+            "the selected tests don't execute them, or they hold nothing to mutate.",
+            (self.report_dir / "summary.md").read_text(),
+        )
+
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)
         (self.root / "src" / "sample.cpp").write_text("// local edit\n")

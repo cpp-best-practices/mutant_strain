@@ -198,7 +198,11 @@ class MarkdownSummaryTest(unittest.TestCase):
         self.assertIn("**Mutation score: 100.0%** ✅ meets the 90% threshold\n", markdown)
         self.assertNotIn("Survivors", markdown)
 
-    def test_summary_without_mutants(self) -> None:
+    def test_summary_without_mutants_says_nothing_was_tested_and_why(self) -> None:
+        self.assertEqual(
+            markdown_summary([], threshold=None, no_mutants="No source line changed since main."),
+            "## strain mutation testing\n\n**Nothing was mutation tested.** No source line changed since main.\n",
+        )
         self.assertIn("No mutants were generated.", markdown_summary([], threshold=None))
 
     def test_pipes_in_file_names_do_not_break_the_table(self) -> None:
@@ -229,9 +233,9 @@ class HtmlReportTest(unittest.TestCase):
         self.assertNotIn("<script", page)
 
     def test_report_without_mutants(self) -> None:
-        page = html_report([], {})
+        page = html_report([], {}, "No source line changed since a<b.")
         self.assertIn("<title>strain mutation report: n/a</title>", page)
-        self.assertIn("No mutants were generated", page)
+        self.assertIn("<strong>Nothing was mutation tested.</strong> No source line changed since a&lt;b.", page)
 
 
 class MutationTestingElementsTest(unittest.TestCase):

@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from html import escape
 
 from .console import HIGH_SCORE, LOW_SCORE
-from .report import TAB_WIDTH, FileScore, file_scores, format_score, hint
+from .report import NO_MUTANTS, TAB_WIDTH, FileScore, file_scores, format_score, hint
 from .results import DETECTED_STATES, CombinedResult, MutantState, mutation_score
 
 KILLED_CLASS = "killed"
@@ -145,7 +145,7 @@ def _counts(combined: Sequence[CombinedResult]) -> str:
     return ", ".join(f"{escape(state)} {states.count(state)}" for state in MutantState if state in states)
 
 
-def html_report(combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> str:
+def html_report(combined: Sequence[CombinedResult], sources: Mapping[str, str], no_mutants: str = NO_MUTANTS) -> str:
     score = mutation_score(entry.state for entry in combined)
     body = (
         [
@@ -155,7 +155,7 @@ def html_report(combined: Sequence[CombinedResult], sources: Mapping[str, str]) 
             *_file_sections(combined, sources),
         ]
         if combined
-        else ["<p>No mutants were generated.</p>"]
+        else [f"<p><strong>Nothing was mutation tested.</strong> {escape(no_mutants)}</p>"]
     )
     page = [
         "<!DOCTYPE html>",
