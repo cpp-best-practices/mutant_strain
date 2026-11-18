@@ -307,7 +307,8 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
         self.assertIn("· src/sample.cpp: 8 mutants on 6 lines", stdout)
         self.assertIn("[1/8] killed", stdout)
-        self.assertIn("sample_tests   score 40.0%   killed 1  sanitizer 1  timeout 0  survived 3", stdout)
+        # Either test may be the one that kills add, so the per-test lines vary; the combined score doesn't.
+        self.assertIn("src/sample.cpp   40.0%   8 mutants  2 detected  3 survived", stdout)
         self.assertIn("✓ sources restored and rebuilt", stdout)
         # Both tests kill the mutant of add; whichever runs first is the only one to run.
         add = [event["test"] for event in self.mutant_events() if event["line"] == 3]
