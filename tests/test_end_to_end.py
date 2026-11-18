@@ -97,6 +97,9 @@ SINGLE_TEST_STATES = [
 ]
 
 
+OTHER_TESTS_CHECKING_ADD = '#include "sample.hpp"\n\nint main() { return add(1, 1) == 2 ? 0 : 1; }\n'
+
+
 def run_strain(*argv: str) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -295,6 +298,7 @@ class EndToEndTest(unittest.TestCase):
         )
 
     def test_per_mutant_strategy_builds_each_mutant_once_and_stops_at_the_first_kill(self) -> None:
+        (self.root / "tests" / "other_tests.cpp").write_text(OTHER_TESTS_CHECKING_ADD)
         configure_project(self.root, self.build_dir)
 
         exit_code, stdout, _ = self.run_per_mutant()
@@ -305,9 +309,29 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("[1/8] killed", stdout)
         self.assertIn("sample_tests   score 40.0%   killed 1  sanitizer 1  timeout 0  survived 3", stdout)
         self.assertIn("✓ sources restored and rebuilt", stdout)
+        # Both tests kill the mutant of add; whichever runs first is the only one to run.
         add = [event["test"] for event in self.mutant_events() if event["line"] == 3]
-        self.assertEqual(add, ["sample_tests"])
+        self.assertEqual(len(add), 1, add)
         self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+
+    def test_per_mutant_strategy_runs_the_fastest_covering_test_first(self) -> None:
+        (self.root / "tests" / "other_tests.cpp").write_text(OTHER_TESTS_CHECKING_ADD)
+        sample_tests = self.root / "tests" / "sample_tests.cpp"
+        sample_tests.write_text(
+            "#include <chrono>\n#include <thread>\n"
+            + sample_tests.read_text().replace(
+                "int main()\n{\n", "int main()\n{\n  std::this_thread::sleep_for(std::chrono::seconds(1));\n", 1
+            )
+        )
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = self.run_per_mutant()
+
+        self.assertEqual(exit_code, 0, stdout)
+        # sample_tests is selected first, but other_tests is faster and kills the mutant of add on its own.
+        add = [event["test"] for event in self.mutant_events() if event["line"] == 3]
+        self.assertEqual(add, ["other_tests"])
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
 
     def test_per_mutant_strategy_runs_every_covering_test_of_a_survivor(self) -> None:
         (self.root / "tests" / "sample_tests.cpp").write_text(
@@ -319,7 +343,7 @@ class EndToEndTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0, stdout)
         self.assertEqual(self.mutant_states(), [(3, "aor", "-", "survived")])
-        self.assertEqual([event["test"] for event in self.mutant_events()], ["sample_tests", "other_tests"])
+        self.assertEqual(sorted(event["test"] for event in self.mutant_events()), ["other_tests", "sample_tests"])
 
     def test_a_second_run_at_the_same_commit_does_not_rebuild_mutants_known_to_break_the_build(self) -> None:
         configure_project(self.root, self.build_dir)
