@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from strain.compile_time import (
@@ -10,7 +12,7 @@ from strain.compile_time import (
 )
 from strain.mutators import Mutant
 from strain.results import MutantState
-from strain.runner import build_failure_state, failure_description
+from strain.runner import build_failure_state, failure_description, relative_paths
 
 SOURCE = """\
 template <typename T> constexpr T twice(T x) noexcept(true)
@@ -81,6 +83,28 @@ class CompileTimeCheckFailureTest(unittest.TestCase):
         self.assertIs(
             build_failure_state(failure_description("error: expected ';'", "build failed")), MutantState.COMPILE_ERROR
         )
+
+
+class RelativePathsTest(unittest.TestCase):
+    def test_paths_into_the_project_are_shortened_through_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            real = Path(folder, "real", "project")
+            (real / "tests").mkdir(parents=True)
+            (real / "tests" / "a.cpp").write_text("")
+            link = Path(folder, "link")
+            link.symlink_to(real.parent)
+            source_dir = real.resolve()
+            diagnostics = (
+                f"{link}/project/tests/a.cpp:3:15: error: static assertion failed\n"
+                f"{source_dir}/tests/a.cpp:4:1: note: here\n"
+                "/usr/include/c++/v1/vector:10:2: note: elsewhere"
+            )
+            self.assertEqual(
+                relative_paths(diagnostics, source_dir),
+                "tests/a.cpp:3:15: error: static assertion failed\n"
+                "tests/a.cpp:4:1: note: here\n"
+                "/usr/include/c++/v1/vector:10:2: note: elsewhere",
+            )
 
 
 class NotMutatedTest(unittest.TestCase):

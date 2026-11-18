@@ -4,6 +4,7 @@ import enum
 import json
 import math
 import os
+import re
 import shlex
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -222,6 +223,26 @@ class Outcome:
     state: MutantState
     survivor: SurvivorKind | None = None
     detail: str = ""
+
+
+# An absolute path in a compiler diagnostic: it ends at whitespace, a colon, a quote or a bracket.
+ABSOLUTE_PATH = re.compile(r"(?<![\w.])/[^\s:'\"()\[\]]+")
+
+
+def relative_paths(diagnostics: str, source_dir: Path) -> str:
+    """`diagnostics` with paths in the project relative to it, so details and the build cache stay short.
+
+    A path counts if it resolves into the project, so a symlinked spelling such as macOS's /var for /private/var
+    is shortened too.
+    """
+
+    def shorten(match: re.Match[str]) -> str:
+        try:
+            return Path(match.group(0)).resolve().relative_to(source_dir).as_posix()
+        except (OSError, ValueError):
+            return match.group(0)
+
+    return ABSOLUTE_PATH.sub(shorten, diagnostics)
 
 
 def failure_description(diagnostics: str, otherwise: str) -> str:
@@ -508,16 +529,12 @@ class Runner:
         self.console.status(f"{label}  checking syntax…")
         diagnostics = None if command is None else command.syntax_check()
         if diagnostics is not None:
-            return failure_description(self.relative_paths(diagnostics), "rejected by -fsyntax-only")
+            return failure_description(relative_paths(diagnostics, self.source_dir), "rejected by -fsyntax-only")
         self.console.status(f"{label}  building…")
         for target in targets:
             if not self.build(target):
-                return failure_description(self.relative_paths("\n".join(self.build_log)), "build failed")
+                return failure_description(relative_paths("\n".join(self.build_log), self.source_dir), "build failed")
         return None
-
-    def relative_paths(self, diagnostics: str) -> str:
-        """`diagnostics` with paths in the project relative to it, so details and the build cache stay short."""
-        return diagnostics.replace(f"{self.source_dir}{os.sep}", "")
 
     def build_mutant(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> Outcome | None:
         """Compiles the mutated source; returns the compile error outcome, and remembers it, when it does not build."""
