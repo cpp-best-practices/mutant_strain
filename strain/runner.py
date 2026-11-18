@@ -30,6 +30,7 @@ from .build_cache import BuildFailureCache, cache_path
 from .config import CONFIG_FILE, Config, load_config
 from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, create_console, plural, score_style
 from .coverage import FileCoverage, GcovCoverage
+from .estimate import Estimate, MutantCost, format_eta
 from .journal import Journal
 from .mutators import (
     Engine,
@@ -94,6 +95,14 @@ class StrainError(Exception):
     """A problem that stops the run before or between tests."""
 
 
+class Order(enum.StrEnum):
+    """cost runs the mutants with the cheapest covering tests first, so most results arrive early; source keeps the
+    order of the files and offsets, which is reproducible."""
+
+    COST = "cost"
+    SOURCE = "source"
+
+
 class Strategy(enum.StrEnum):
     """per-test builds every mutant once per test; per-mutant builds it once and runs its tests until one kills it."""
 
@@ -109,6 +118,7 @@ class RunOptions:
     since: str | None = None
     skip_killed: bool = False
     strategy: Strategy = Strategy.PER_TEST
+    order: Order = Order.COST
     build_cache: bool = True
     engine: Engine = Engine.AUTO
     safety_nets: Level | None = None
@@ -185,6 +195,14 @@ class CoveredMutant:
     tests: list[CoveringTest] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class MutantTimes:
+    """Whether the mutant in progress was built, and how long its tests took, for the estimate of the time left."""
+
+    built: bool = False
+    tests: float | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Outcome:
     state: MutantState
@@ -222,6 +240,8 @@ class Runner:
         self.test_targets: dict[str, Target] = {}
         self.test_executables: dict[str, Path] = {}
         self.memory_limits: dict[str, ctest.MemoryLimit] = {}
+        self.times = MutantTimes()
+        self.eta = ""
         self.build_is_mutated = False
         self.coverage_verified = False
         self.build_jobs: int | None = None
@@ -457,6 +477,7 @@ class Runner:
 
     def build_mutant(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> Outcome | None:
         """Compiles the mutated source; returns the compile error outcome, and remembers it, when it does not build."""
+        self.times.built = True
         failure = self.build_failure(planned, targets, label)
         if failure is None:
             return None
@@ -474,6 +495,7 @@ class Runner:
         self.console.status(f"{label}  running {test}…")
         memory = self.memory_limits.get(test)
         run = ctest.run_test(self.build_dir, test, timeout, memory)
+        self.times.tests = (self.times.tests or 0.0) + run.duration
         state = classify_run(run, None if memory is None else memory.megabytes * ctest.MEGABYTE)
         survivor = survivor_kind(coverage, line) if state is MutantState.SURVIVED else None
         detail = f"{run.duration:.2f}s"
@@ -555,27 +577,41 @@ class Runner:
         self.verify_coverage_data(test, coverage)
         planned = self.plan_mutants(self.source_files(coverage, self.test_code(test)))
         self.console.plan([entry.mutant for entry in planned])
+        estimate = Estimate([MutantCost(entry.mutant.file, duration) for entry in planned])
+        self.eta = ""
         width = len(str(len(planned)))
         results: list[MutantResult] = []
         for number, entry in enumerate(planned, start=1):
             progress = f"[{number:>{width}}/{len(planned)}]"
-            label = f"  {progress} {describe_mutant(entry.mutant)}"
             self.console.mutant_started(number - 1, entry.source.text, entry.mutant)
-            outcome = self.outcome_for(test, entry, timeout, events, label)
-            if outcome is None:
-                self.show_mutant(progress, entry.mutant, "skipped", "already killed by an earlier test")
-                self.console.mutant_finished(number - 1, "skipped")
-                continue
-            function = entry.source.coverage.function_at(entry.mutant.line)
-            results.append(MutantResult(entry.mutant, test, outcome.state, outcome.survivor, function))
-            self.record(results[-1], events)
-            self.console.mutant_evaluated(
-                results[-1], entry.source.text, entry.source.coverage.lines.get(entry.mutant.line)
-            )
-            self.show_mutant(progress, entry.mutant, outcome.state, outcome.detail)
-            self.console.mutant_finished(number - 1, outcome.state)
+            with self.estimating(estimate, number - 1, events):
+                state = self.test_planned(test, entry, timeout, events, progress, results)
+            self.console.mutant_finished(number - 1, state)
         self.rebuild_if_mutated()
         return results
+
+    def test_planned(
+        self,
+        test: str,
+        entry: PlannedMutant,
+        timeout: float,
+        events: EventLog,
+        progress: str,
+        results: list[MutantResult],
+    ) -> str:
+        """Runs `test` on one mutant of the per-test strategy, adds the result to `results` and returns its state."""
+        outcome = self.outcome_for(test, entry, timeout, events, f"  {progress} {describe_mutant(entry.mutant)}")
+        if outcome is None:
+            self.show_mutant(progress, entry.mutant, "skipped", "already killed by an earlier test")
+            return "skipped"
+        function = entry.source.coverage.function_at(entry.mutant.line)
+        results.append(MutantResult(entry.mutant, test, outcome.state, outcome.survivor, function))
+        self.record(results[-1], events)
+        self.console.mutant_evaluated(
+            results[-1], entry.source.text, entry.source.coverage.lines.get(entry.mutant.line)
+        )
+        self.show_mutant(progress, entry.mutant, outcome.state, outcome.detail)
+        return outcome.state
 
     def verify_coverage_data(self, test: str, coverage: dict[Path, FileCoverage]) -> None:
         if self.coverage_verified:
@@ -615,10 +651,28 @@ class Runner:
 
     def show_mutant(self, progress: str, mutant: Mutant, state: str, detail: str) -> None:
         console = self.console
+        eta = f"  · {self.eta}" if self.eta else ""
         console.line(
             f"  {console.paint(progress, DIM)} {console.state(state)} {describe_mutant(mutant)}"
-            f"  {console.paint(f'{detail}  id {mutant.id}', DIM)}"
+            f"  {console.paint(f'{detail}  id {mutant.id}{eta}', DIM)}"
         )
+
+    @contextmanager
+    def estimating(self, estimate: Estimate, index: int, events: EventLog) -> Iterator[None]:
+        """Times the mutant at `index` for `estimate`, then reports the time left."""
+        self.times = MutantTimes()
+        start = time.monotonic()
+        yield
+        if not self.times.built:
+            estimate.skip(index)
+        else:
+            # Everything but the tests counts as the build, which includes mutating and restoring the source.
+            estimate.record(index, time.monotonic() - start - (self.times.tests or 0.0), self.times.tests)
+        remaining = estimate.remaining_seconds()
+        self.eta = "" if remaining is None else format_eta(remaining)
+        done = len(estimate.costs) - len(estimate.pending)
+        events.emit("progress", done=done, total=len(estimate.costs), remaining_seconds=remaining)
+        self.console.progress_estimated(remaining)
 
     def read_sources(self, combined: Sequence[CombinedResult]) -> dict[str, str]:
         return {
@@ -731,7 +785,13 @@ class Runner:
                 for mutant in self.mutants_for(source):
                     entry = covered.setdefault(mutant.id, CoveredMutant(PlannedMutant(source, suppressed, mutant)))
                     entry.tests.append(CoveringTest(test.name, test.duration, source))
-        return sorted(covered.values(), key=lambda entry: (entry.planned.mutant.file, entry.planned.mutant.offset))
+        return sorted(covered.values(), key=self.mutant_order)
+
+    def mutant_order(self, entry: CoveredMutant) -> tuple[float, str, int]:
+        """With --order cost, the mutants whose covering tests take least time come first, so most results arrive
+        early and an interrupted run has covered the most ground."""
+        cost = sum(test.duration for test in entry.tests) if self.options.order is Order.COST else 0.0
+        return (cost, entry.planned.mutant.file, entry.planned.mutant.offset)
 
     def plan_covered_mutants(self, covered: Sequence[CoveredMutant]) -> None:
         self.console.heading("Mutants")
@@ -807,11 +867,16 @@ class Runner:
         baselined = self.baseline_tests(tests, events)
         covered = self.cover_mutants(baselined)
         self.plan_covered_mutants(covered)
+        estimate = Estimate(
+            [MutantCost(entry.planned.mutant.file, sum(test.duration for test in entry.tests)) for entry in covered]
+        )
+        self.eta = ""
         width = len(str(len(covered)))
         results: list[MutantResult] = []
         for number, entry in enumerate(covered, start=1):
             self.console.mutant_started(number - 1, entry.planned.source.text, entry.planned.mutant)
-            mutant_results = self.evaluate_covered(entry, events, f"[{number:>{width}}/{len(covered)}]")
+            with self.estimating(estimate, number - 1, events):
+                mutant_results = self.evaluate_covered(entry, events, f"[{number:>{width}}/{len(covered)}]")
             results += mutant_results
             self.console.mutant_finished(number - 1, combine(mutant_results)[0].state)
         self.rebuild_if_mutated()

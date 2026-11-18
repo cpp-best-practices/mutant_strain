@@ -133,6 +133,8 @@ class LiveState:
         self.queue: list[QueueEntry] = []
         self.current: int | None = None
         self.mutant_started_at: float | None = None
+        # The runner's estimate of the time the queue needs, and when it gave it.
+        self.estimate: tuple[float, float] | None = None
         self.results: list[MutantResult] = []
         self.contexts: dict[str, MutantContext] = {}
         self.sources: dict[str, str] = {}
@@ -166,6 +168,7 @@ class LiveState:
     def _set_queue(self, queue: list[QueueEntry]) -> None:
         self.queue = queue
         self.current = None
+        self.estimate = None
         self.plan_version += 1
         self._changed()
 
@@ -234,6 +237,11 @@ class LiveState:
             self.log.append(text)
             if text.strip():
                 self.status = text.strip()
+            self._changed()
+
+    def set_estimate(self, remaining_seconds: float | None) -> None:
+        with self.lock:
+            self.estimate = None if remaining_seconds is None else (remaining_seconds, self.clock())
             self._changed()
 
     def set_status(self, text: str) -> None:
@@ -326,9 +334,15 @@ class LiveState:
         return sum(timed) / len(timed) if timed else None
 
     def remaining_seconds(self) -> float | None:
-        """How long the queue of the current test will take, from the average time per mutant so far."""
+        """How long the queue will take: the runner's estimate, counted down since it came, or else the average time
+        per mutant so far times the mutants left."""
+        if self.done:
+            return None
+        if self.estimate is not None:
+            seconds, at = self.estimate
+            return max(0.0, seconds - (self.clock() - at))
         mean = self.mean_duration()
-        if mean is None or self.done:
+        if mean is None:
             return None
         return mean * (len(self.queue) - self.done_count())
 

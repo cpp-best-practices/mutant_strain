@@ -132,6 +132,19 @@ For each selected test:
 
 Interrupted runs continue with `--resume`.
 
+With `--strategy per-mutant`, strain baselines every test first, then builds each mutant once and runs its covering
+tests, fastest first, until one detects it. Mutants with the cheapest covering tests go first (`--order cost`, the
+default), so most results arrive early and an interrupted run has covered the most ground. `--order source` keeps the
+order of files and offsets instead.
+
+### Time left
+
+Each progress line ends with an estimate of the time left, such as `· ETA 2h10m`. strain also writes it to
+`events.jsonl` as a `progress` event, and the live TUI's header counts it down. A mutant costs a rebuild of its file
+plus its covering tests' baseline durations. The estimate learns each file's rebuild time, and what fraction of those
+durations the tests really take, since a kill stops them early. It covers the whole run with `per-mutant`, and the
+current test with `per-test`, where later tests' mutants aren't known yet.
+
 ### Build cache
 
 A mutant that doesn't compile is a `compile_error` for every test, so strain builds it only once:
@@ -199,6 +212,7 @@ strain run --safety-nets=warn
 | `-R` / `-E` | | Include / exclude tests by regex, as in ctest |
 | `--since <ref>` | | Mutate only lines changed since a git ref |
 | `--strategy` | `per-test` | `per-test`, or `per-mutant`: build each mutant once and run its covering tests, fastest first, until one detects it |
+| `--order` | `cost` | With `per-mutant`: `cost` (cheapest covering tests first) or `source` (by file and offset) |
 | `--skip-killed` | off | Skip mutants an earlier test already killed |
 | `--no-build-cache` | off | Don't reuse or save the [build cache](#build-cache) |
 | `--engine` | `auto` | `cppcheck`, `tree-sitter`, `lexer` |

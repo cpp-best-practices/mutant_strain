@@ -147,6 +147,9 @@ class Console:
     def mutant_finished(self, index: int, state: str) -> None:
         pass
 
+    def progress_estimated(self, remaining_seconds: float | None) -> None:
+        """How long the planned mutants left will take, after each mutant; None until there is enough to go on."""
+
     def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
         pass
 
