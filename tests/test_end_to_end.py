@@ -115,6 +115,40 @@ std::vector<int> countdown(int from)
 COUNTDOWN_TEST = '#include "sample.hpp"\n\nint main() { return countdown(3).size() == 3 ? 0 : 1; }\n'
 
 
+CONSTEXPR_HEADER = """#ifndef SAMPLE_HPP
+#define SAMPLE_HPP
+
+using Value = int;
+
+constexpr int clamp_index(int index, int size)
+{
+  if (index < 0) { return 0; }
+  if (index >= size) { return size - 1; }
+  return index;
+}
+
+constexpr Value first_of(const Value *values)
+{
+  const Value *start = values;
+  return start[0];
+}
+
+[[nodiscard]] int add(int lhs, int rhs);
+
+#endif
+"""
+CONSTEXPR_TEST = """#include "sample.hpp"
+
+static_assert(clamp_index(-1, 4) == 0);
+static_assert(clamp_index(9, 4) == 3);
+static_assert(clamp_index(2, 4) == 2);
+constexpr Value values[] = { 7 };
+static_assert(first_of(values) == 7);
+
+int main() { return add(2, 3) == 5 ? 0 : 1; }
+"""
+
+
 def run_strain(*argv: str) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -589,6 +623,65 @@ class EndToEndTest(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux enforces RLIMIT_DATA")
     def test_a_mutant_that_allocates_forever_stops_at_the_memory_limit_without_asan(self) -> None:
         self.run_countdown("--coverage", "--coverage", "--safety-nets", "ignore")
+
+    def run_constexpr(self, *argv: str) -> str:
+        (self.root / "include" / "sample.hpp").write_text(CONSTEXPR_HEADER)
+        (self.root / "src" / "sample.cpp").write_text(
+            '#include "sample.hpp"\n\nint add(int lhs, int rhs) { return lhs + rhs; }\n'
+        )
+        (self.root / "tests" / "sample_tests.cpp").write_text(CONSTEXPR_TEST)
+        (self.root / "tests" / "other_tests.cpp").write_text("int main() { return 0; }\n")
+        configure_project(self.root, self.build_dir, cxx_flags=f"{CXX_FLAGS} -std=c++20")
+        exit_code, stdout, _ = run_strain(
+            *("--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir)),
+            *("-R", "^sample_tests$", "--engine", "lexer", *argv),
+        )
+        self.assertEqual(exit_code, 0, stdout)
+        return stdout
+
+    def header_states(self) -> list[tuple[int, str, str, str]]:
+        report = json.loads((self.report_dir / "report.json").read_text())
+        mutants = report["files"].get("include/sample.hpp", {"mutants": []})["mutants"]
+        return sorted(
+            (mutant["location"]["start"]["line"], mutant["mutatorName"], mutant["replacement"], mutant["statusReason"])
+            for mutant in mutants
+        )
+
+    def test_constexpr_code_checked_only_by_static_assert_is_reported_as_not_mutated(self) -> None:
+        stdout = self.run_constexpr()
+
+        self.assertIn("▸ Not mutated: evaluated at compile time only", stdout)
+        self.assertIn("· include/sample.hpp:8-9 clamp_index(): 5 mutants on 2 lines", stdout)
+        self.assertIn("· include/sample.hpp:15 first_of(): 1 mutant on 1 line", stdout)
+        self.assertEqual(self.header_states(), [])
+        report = json.loads((self.report_dir / "report.json").read_text())
+        self.assertEqual(
+            report["compileTimeOnly"][0],
+            {"file": "include/sample.hpp", "function": "clamp_index", "lines": [8, 9], "mutants": 5},
+        )
+        summary = (self.report_dir / "summary.md").read_text()
+        self.assertIn("### Not mutated: evaluated at compile time only", summary)
+        self.assertIn("- `include/sample.hpp:8-9` clamp_index(): 5 mutants on 2 lines", summary)
+
+    def test_compile_time_mutants_fail_static_asserts_or_survive_while_invalid_code_is_a_compile_error(self) -> None:
+        stdout = self.run_constexpr("--compile-time")
+
+        self.assertEqual(
+            self.header_states(),
+            [
+                (8, "ror", "<=", "survived"),
+                (8, "ror", ">=", "killed_at_compile_time"),
+                (9, "aor", "+", "killed_at_compile_time"),
+                (9, "ror", "<", "killed_at_compile_time"),
+                (9, "ror", ">", "survived"),
+                (15, "aor", "/", "compile_error"),
+            ],
+        )
+        self.assertNotIn("Not mutated", stdout)
+        self.assertRegex(
+            stdout, r"killed at compile time: tests/sample_tests\.cpp:3:\d+: error: static assertion failed"
+        )
+        self.assertIn("add a static_assert where `<` and `<=` give different results", stdout)
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)

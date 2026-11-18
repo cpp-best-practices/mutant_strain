@@ -160,6 +160,7 @@ A mutant that doesn't compile is a `compile_error` for every test, so strain bui
 | `killed` | A test failed | Yes |
 | `killed_by_sanitizer` | ASan or UBSan caught it, the assertions didn't | Yes, flagged |
 | `killed_by_resource_limit` | The test reached its [memory limit](#memory-limit) | Yes |
+| `killed_at_compile_time` | A `static_assert` or a constant evaluation failed with it in place | Yes |
 | `timeout` | Ran too long | Yes |
 | `survived` | All tests passed | Yes |
 | `skipped_unevaluated` | Operand never evaluated by this test | No |
@@ -168,7 +169,25 @@ A mutant that doesn't compile is a `compile_error` for every test, so strain bui
 
 Survivors are labeled `not_reached` (needs a new test input) or `not_detected` (needs a stronger assertion) when branch coverage is available.
 
-Mutation score = (killed + killed_by_sanitizer + killed_by_resource_limit + timeout) ÷ (those + survived)
+Mutation score = (killed + killed_by_sanitizer + killed_by_resource_limit + killed_at_compile_time + timeout) ÷
+(those + survived)
+
+### Compile-time code
+
+gcov counts what runs, so a `constexpr` or `consteval` function checked only by `static_assert` has no executed lines.
+strain would never mutate it, and a header used only that way doesn't appear in the coverage data at all. strain finds
+these functions in the sources instead:
+
+- **By default:** the lines of `constexpr` and `consteval` functions that hold mutants but that no test runs are listed
+  under **Not mutated: evaluated at compile time only**. That covers the console, `summary.md`, `index.html` and
+  `compileTimeOnly` in `report.json`. You can tell "well tested" from "never looked at".
+- **With `--compile-time`:** after the tests, strain mutates those lines and builds everything with each mutant.
+  - A failed `static_assert` or constant evaluation kills it as `killed_at_compile_time`. Its detail names the failed
+    check.
+  - A mutant that builds survives, with a hint to add a `static_assert`.
+  - Invalid code stays `compile_error`.
+- **Any mutant:** a build or `-fsyntax-only` check that fails on a compile-time check counts as `killed_at_compile_time`,
+  even on lines the tests run. The [build cache](#build-cache) remembers it like any other build failure.
 
 ### Memory limit
 
@@ -222,6 +241,7 @@ strain run --safety-nets=warn
 | `--threshold` | | Exit non-zero below this score |
 | `--strict` | off | Abort if any test is excluded |
 | `--max-per-line` | | Cap mutants per source line |
+| `--compile-time` | off | Also mutate `constexpr` code no test runs; see [Compile-time code](#compile-time-code) |
 | `--memory-limit` | 4× the baseline, at least 512 MB | Memory each test may use with a mutant in place, in MB; `0` for no limit. See [Memory limit](#memory-limit) |
 | `--resume` | | Continue an interrupted run |
 | `--all` | off | Show every survivor, not just the top actions |

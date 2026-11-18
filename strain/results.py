@@ -19,6 +19,7 @@ class MutantState(enum.StrEnum):
     KILLED = "killed"
     KILLED_BY_SANITIZER = "killed_by_sanitizer"
     KILLED_BY_RESOURCE_LIMIT = "killed_by_resource_limit"
+    KILLED_AT_COMPILE_TIME = "killed_at_compile_time"
     TIMEOUT = "timeout"
     SURVIVED = "survived"
     SKIPPED_UNEVALUATED = "skipped_unevaluated"
@@ -32,7 +33,13 @@ class SurvivorKind(enum.StrEnum):
 
 
 DETECTED_STATES = frozenset(
-    {MutantState.KILLED, MutantState.KILLED_BY_SANITIZER, MutantState.KILLED_BY_RESOURCE_LIMIT, MutantState.TIMEOUT}
+    {
+        MutantState.KILLED,
+        MutantState.KILLED_BY_SANITIZER,
+        MutantState.KILLED_BY_RESOURCE_LIMIT,
+        MutantState.KILLED_AT_COMPILE_TIME,
+        MutantState.TIMEOUT,
+    }
 )
 SCORED_STATES = DETECTED_STATES | {MutantState.SURVIVED}
 
