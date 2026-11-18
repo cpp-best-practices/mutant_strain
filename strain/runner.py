@@ -2,6 +2,7 @@
 
 import enum
 import json
+import math
 import os
 import shlex
 import time
@@ -81,6 +82,9 @@ from .safety_nets import (
 BASELINE_TIMEOUT_SECONDS = 600.0
 MINIMUM_TIMEOUT_SECONDS = 10.0
 TIMEOUT_FACTOR = 3.0
+# A mutant may use this many times the memory its test uses without one, but always at least the minimum.
+MEMORY_FACTOR = 4
+MINIMUM_MEMORY_MEGABYTES = 512
 DEFAULT_ACTION_ITEMS = 10
 SOURCE_ENCODING = "utf-8"
 SOURCE_ERRORS = "surrogateescape"
@@ -111,6 +115,8 @@ class RunOptions:
     threshold: float | None = None
     strict: bool = False
     max_per_line: int | None = None
+    # Megabytes per test run with a mutant; None derives it from the baseline, and 0 turns the limit off.
+    memory_limit: int | None = None
     resume: bool = False
     show_all: bool = False
     ui: UiMode = UiMode.AUTO
@@ -214,6 +220,8 @@ class Runner:
         self.engine = Engine.LEXER
         self.sites: dict[str, list[OperatorSite]] = {}
         self.test_targets: dict[str, Target] = {}
+        self.test_executables: dict[str, Path] = {}
+        self.memory_limits: dict[str, ctest.MemoryLimit] = {}
         self.build_is_mutated = False
         self.coverage_verified = False
         self.build_jobs: int | None = None
@@ -299,11 +307,25 @@ class Runner:
 
     def find_test_targets(self) -> dict[str, Target]:
         artifacts = target_artifacts(self.build_dir)
+        self.test_executables = ctest.executables_by_test(self.build_dir)
         return {
-            test: artifacts[executable]
-            for test, executable in ctest.executables_by_test(self.build_dir).items()
-            if executable in artifacts
+            test: artifacts[executable] for test, executable in self.test_executables.items() if executable in artifacts
         }
+
+    def memory_limit_for(self, test: str, peak_memory: int | None) -> ctest.MemoryLimit | None:
+        """How much memory `test` may use with a mutant in place, so a mutant that allocates forever is stopped.
+
+        When the program is unknown, the limit goes through ASAN_OPTIONS alone: harmless without ASan, while a data
+        segment limit would stop an ASan program from starting.
+        """
+        megabytes = self.options.memory_limit
+        if megabytes == 0:
+            return None
+        if megabytes is None:
+            measured = math.ceil(MEMORY_FACTOR * (peak_memory or 0) / ctest.MEGABYTE)
+            megabytes = max(MINIMUM_MEMORY_MEGABYTES, measured)
+        executable = self.test_executables.get(test)
+        return ctest.MemoryLimit(megabytes, asan=executable is None or ctest.uses_asan(executable))
 
     def target_for(self, test: str) -> str | None:
         """The CMake target that builds the program `test` runs; None rebuilds everything."""
@@ -450,12 +472,16 @@ class Runner:
 
     def run_mutated(self, test: str, timeout: float, coverage: FileCoverage, line: int, label: str) -> Outcome:
         self.console.status(f"{label}  running {test}…")
-        run = ctest.run_test(self.build_dir, test, timeout)
-        state = classify_run(run)
+        memory = self.memory_limits.get(test)
+        run = ctest.run_test(self.build_dir, test, timeout, memory)
+        state = classify_run(run, None if memory is None else memory.megabytes * ctest.MEGABYTE)
         survivor = survivor_kind(coverage, line) if state is MutantState.SURVIVED else None
-        return Outcome(
-            state, survivor, f"{run.duration:.2f}s" if survivor is None else f"{run.duration:.2f}s, {survivor}"
-        )
+        detail = f"{run.duration:.2f}s"
+        if survivor is not None:
+            detail += f", {survivor}"
+        if state is MutantState.KILLED_BY_RESOURCE_LIMIT and memory is not None:
+            detail += f", reached the {memory.megabytes} MB memory limit"
+        return Outcome(state, survivor, detail)
 
     def evaluate(self, test: str, planned: PlannedMutant, timeout: float, label: str) -> Outcome:
         known = self.known_build_failure(planned)
@@ -473,15 +499,27 @@ class Runner:
         self.console.status(f"  running {test} without mutation…")
         baseline = ctest.run_test(self.build_dir, test, BASELINE_TIMEOUT_SECONDS)
         problem = baseline_problem(baseline)
-        events.emit("baseline", test=test, duration=baseline.duration, problem=problem)
+        events.emit(
+            "baseline", test=test, duration=baseline.duration, peak_memory=baseline.peak_memory, problem=problem
+        )
         if problem is None:
-            timeout = mutant_timeout(baseline.duration)
-            self.console.step(f"baseline passed in {baseline.duration:.2f}s; mutants time out after {timeout:.0f}s")
+            self.show_baseline(test, baseline)
             return baseline.duration
         if self.options.strict:
             raise StrainError(f"test {test} {problem}; excluded tests are fatal with --strict")
         self.console.warn(f"test {test} {problem}; excluding it")
         return None
+
+    def show_baseline(self, test: str, baseline: ctest.RunResult) -> None:
+        """Shows how the test did without a mutant, and the limits that derives for its mutants."""
+        memory = self.memory_limit_for(test, baseline.peak_memory)
+        if memory is not None:
+            self.memory_limits[test] = memory
+        used = "" if baseline.peak_memory is None else f" using {math.ceil(baseline.peak_memory / ctest.MEGABYTE)} MB"
+        limits = f"time out after {mutant_timeout(baseline.duration):.0f}s"
+        if memory is not None:
+            limits += f" or stop at {memory.megabytes} MB"
+        self.console.step(f"baseline passed in {baseline.duration:.2f}s{used}; mutants {limits}")
 
     def outcome_for(
         self, test: str, planned: PlannedMutant, timeout: float, events: EventLog, label: str

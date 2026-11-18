@@ -21,6 +21,13 @@ def _positive_int(text: str) -> int:
     return value
 
 
+def _megabytes(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 (no limit) or more, got {value}")
+    return value
+
+
 def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--build-dir", type=Path, default=Path("."), help="CMake build folder")
     parser.add_argument("-R", dest="include", metavar="REGEX", help="include tests by regex, as in ctest")
@@ -68,6 +75,13 @@ def _add_policy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--threshold", type=float, metavar="PERCENT", help="exit non-zero below this score")
     parser.add_argument("--strict", action="store_true", help="abort if any test is excluded")
     parser.add_argument("--max-per-line", type=_positive_int, metavar="N", help="cap mutants per source line")
+    parser.add_argument(
+        "--memory-limit",
+        type=_megabytes,
+        metavar="MB",
+        help="memory each test may use with a mutant in place; 0 for no limit "
+        "(default: 4 times what the test uses without one, at least 512 MB)",
+    )
     parser.add_argument("--resume", action="store_true", help="continue an interrupted run")
 
 
@@ -106,6 +120,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         threshold=arguments.threshold,
         strict=arguments.strict,
         max_per_line=arguments.max_per_line,
+        memory_limit=arguments.memory_limit,
         resume=arguments.resume,
         show_all=arguments.show_all,
         ui=arguments.ui,
