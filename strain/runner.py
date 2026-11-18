@@ -150,18 +150,27 @@ class PlannedMutant:
     mutant: Mutant
 
 
+def mutant_timeout(baseline_seconds: float) -> float:
+    """How long a test may run with a mutant in place, from how long it took without one."""
+    return max(MINIMUM_TIMEOUT_SECONDS, baseline_seconds * TIMEOUT_FACTOR)
+
+
 @dataclass(frozen=True, slots=True)
 class BaselinedTest:
     name: str
-    timeout: float
+    duration: float
     sources: list[SourceFile]
 
 
 @dataclass(frozen=True, slots=True)
 class CoveringTest:
     name: str
-    timeout: float
+    duration: float
     source: SourceFile
+
+    @property
+    def timeout(self) -> float:
+        return mutant_timeout(self.duration)
 
 
 @dataclass(slots=True)
@@ -459,15 +468,16 @@ class Runner:
             return self.run_mutated(test, timeout, planned.source.coverage, planned.mutant.line, label)
 
     def run_baseline(self, test: str, events: EventLog) -> float | None:
+        """How long `test` takes without a mutant, or None when it is excluded."""
         self.coverage.reset()
         self.console.status(f"  running {test} without mutation…")
         baseline = ctest.run_test(self.build_dir, test, BASELINE_TIMEOUT_SECONDS)
         problem = baseline_problem(baseline)
         events.emit("baseline", test=test, duration=baseline.duration, problem=problem)
         if problem is None:
-            timeout = max(MINIMUM_TIMEOUT_SECONDS, baseline.duration * TIMEOUT_FACTOR)
+            timeout = mutant_timeout(baseline.duration)
             self.console.step(f"baseline passed in {baseline.duration:.2f}s; mutants time out after {timeout:.0f}s")
-            return timeout
+            return baseline.duration
         if self.options.strict:
             raise StrainError(f"test {test} {problem}; excluded tests are fatal with --strict")
         self.console.warn(f"test {test} {problem}; excluding it")
@@ -499,9 +509,10 @@ class Runner:
         return None
 
     def run_test(self, test: str, events: EventLog) -> list[MutantResult]:
-        timeout = self.run_baseline(test, events)
-        if timeout is None:
+        duration = self.run_baseline(test, events)
+        if duration is None:
             return []
+        timeout = mutant_timeout(duration)
         coverage = self.coverage.collect()
         self.verify_coverage_data(test, coverage)
         planned = self.plan_mutants(self.source_files(coverage, self.test_code(test)))
@@ -662,23 +673,26 @@ class Runner:
         for number, test in enumerate(tests, start=1):
             self.console.heading(f"Baseline {number}/{len(tests)}: {test}")
             self.console.test_started(test, number, len(tests))
-            timeout = self.run_baseline(test, events)
-            if timeout is None:
+            duration = self.run_baseline(test, events)
+            if duration is None:
                 continue
             coverage = self.coverage.collect()
             self.verify_coverage_data(test, coverage)
-            baselined.append(BaselinedTest(test, timeout, self.source_files(coverage, self.test_code(test))))
+            baselined.append(BaselinedTest(test, duration, self.source_files(coverage, self.test_code(test))))
         return baselined
 
     def cover_mutants(self, tests: Sequence[BaselinedTest]) -> list[CoveredMutant]:
-        """Every mutant on a line some test executes, with the tests that execute it in the order they were selected."""
+        """Every mutant on a line some test executes, with the tests that execute it, fastest first.
+
+        Running stops at the first test that detects the mutant, so a fast test that kills it spares the slow ones.
+        """
         covered: dict[str, CoveredMutant] = {}
-        for test in tests:
+        for test in sorted(tests, key=lambda test: (test.duration, test.name)):
             for source in test.sources:
                 suppressed = frozenset(suppressed_lines(source.text, self.config.arid))
                 for mutant in self.mutants_for(source):
                     entry = covered.setdefault(mutant.id, CoveredMutant(PlannedMutant(source, suppressed, mutant)))
-                    entry.tests.append(CoveringTest(test.name, test.timeout, source))
+                    entry.tests.append(CoveringTest(test.name, test.duration, source))
         return sorted(covered.values(), key=lambda entry: (entry.planned.mutant.file, entry.planned.mutant.offset))
 
     def plan_covered_mutants(self, covered: Sequence[CoveredMutant]) -> None:
@@ -694,13 +708,15 @@ class Runner:
         self.console.plan([entry.planned.mutant for entry in covered])
 
     def previous_outcomes(self, entry: CoveredMutant, events: EventLog) -> list[tuple[CoveringTest, Outcome]]:
-        """The outcomes an interrupted run recorded for `entry`, up to the first test it did not get to."""
+        """The outcomes an interrupted run recorded for `entry`.
+
+        Every test is looked up: the order is by baseline duration, and close durations can swap between runs.
+        """
         outcomes: list[tuple[CoveringTest, Outcome]] = []
         for test in entry.tests:
             previous = self.previous_outcome(test.name, entry.planned.mutant, events)
-            if previous is None:
-                break
-            outcomes.append((test, previous))
+            if previous is not None:
+                outcomes.append((test, previous))
         return outcomes
 
     def run_covering_tests(
@@ -730,9 +746,11 @@ class Runner:
         if ignored is not None:
             return [(test, ignored) for test in entry.tests]
         outcomes = self.previous_outcomes(entry, events)
-        if any(outcome.state in DETECTED_STATES for _, outcome in outcomes) or len(outcomes) == len(entry.tests):
+        done = {test.name for test, _ in outcomes}
+        remaining = [test for test in entry.tests if test.name not in done]
+        if any(outcome.state in DETECTED_STATES for _, outcome in outcomes) or not remaining:
             return outcomes
-        return outcomes + self.run_covering_tests(entry, entry.tests[len(outcomes) :], label)
+        return outcomes + self.run_covering_tests(entry, remaining, label)
 
     def evaluate_covered(self, entry: CoveredMutant, events: EventLog, progress: str) -> list[MutantResult]:
         mutant = entry.planned.mutant
