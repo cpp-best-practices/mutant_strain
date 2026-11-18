@@ -110,6 +110,19 @@ class LiveStateTest(unittest.TestCase):
         self.state.record_result(survived(MUTANT, "other_tests"), SOURCE, None)
         self.assertEqual(self.state.contexts[MUTANT.id].executions, {"sample_tests": LINE_COVERAGE})
 
+    def test_the_runners_estimate_counts_down_and_ends_with_the_queue(self) -> None:
+        self.state.start_mutant(0, SOURCE, MUTANT)
+        self.clock.now += 2.0
+        self.state.finish_mutant(0, MutantState.KILLED)
+        self.assertEqual(self.state.remaining_seconds(), 2.0)  # the average time per mutant
+        self.state.set_estimate(30.0)
+        self.clock.now += 10.0
+        self.assertEqual(self.state.remaining_seconds(), 20.0)
+        self.clock.now += 50.0
+        self.assertEqual(self.state.remaining_seconds(), 0.0)
+        self.state.plan([SECOND_MUTANT])
+        self.assertIsNone(self.state.estimate)
+
     def test_starting_a_test_drops_the_previous_tests_queue(self) -> None:
         self.state.start_mutant(1, SOURCE, SECOND_MUTANT)
         plan = self.state.plan_version

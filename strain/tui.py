@@ -1189,6 +1189,9 @@ class TuiConsole(Console):
     def mutant_finished(self, index: int, state: str) -> None:
         self.live.finish_mutant(index, state)
 
+    def progress_estimated(self, remaining_seconds: float | None) -> None:
+        self.live.set_estimate(remaining_seconds)
+
     def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
         self.live.record_result(result, source, line)
 
