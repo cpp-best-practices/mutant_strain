@@ -3,7 +3,7 @@
 coverage>=7.17.2
 lizard
 pytest
-ruff>=0.17.4
+ruff>=0.17.5
 setuptools>=64
 # The live TUI, so its tests run rather than skip.
 textual>=8.2.8
