@@ -33,13 +33,24 @@ class TestExecutablesTest(unittest.TestCase):
         )
 
 
+# Grows by 1 MiB every 5 ms, at most 200 MiB a second, so how far a limit overshoots doesn't depend on the machine.
 GROWING_TEST = """
+#include <chrono>
+#include <thread>
 #include <vector>
-int main() { std::vector<std::vector<char>> all; for (;;) { all.emplace_back(1 << 20, 'x'); } }
+int main()
+{
+  std::vector<std::vector<char>> all;
+  for (;;) {
+    all.emplace_back(1 << 20, 'x');
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
 """
 LIMIT_MEGABYTES = 256
-# ASan checks the resident set size about ten times a second, so it can overshoot by what one tenth of a second adds.
-MARGIN_MEGABYTES = 256
+# ASan checks the resident set size about ten times a second, so it overshoots by what a tenth of a second adds:
+# about 20 MiB at the rate above. The margin leaves room for a slow check on a busy machine.
+MARGIN_MEGABYTES = 128
 
 
 class MemoryLimitTest(unittest.TestCase):
