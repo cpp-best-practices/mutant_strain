@@ -1,11 +1,13 @@
 """Runs `strain run --ui live` in a pseudo-terminal and saves what the screen shows as text and PNG frames.
 
     pip install -e '.[ui-snapshot]'
-    python tools/ui_snapshot.py tests/fixtures/sample_project --size 120x36 --keys down,tab,q
+    python tools/ui_snapshot.py tests/fixtures/sample_project --size 120x36 --keys 2,down,q
 
 Frames go to `ui-snapshots/` by default: `frame-NNN.txt` every `--interval` seconds, and
 `key-NN-<key>.txt` after each key, each with a matching `.png` when Pillow is installed.
-The keys are sent once the run has finished, which is when the title shows `finished`.
+The keys are sent once the run has finished, which is when the header shows `✔ finished`, and `--delay`
+seconds later. A key is a name such as `down`, `tab` or `enter`, a character such as `2` or `q`, or a mouse
+event on a cell, counting from 1: `click:COLUMN:ROW`, `scrollup:COLUMN:ROW` or `scrolldown:COLUMN:ROW`.
 """
 
 import argparse
@@ -23,8 +25,24 @@ from pathlib import Path
 
 import pyte
 
-KEYS = {"up": "\033[A", "down": "\033[B", "pageup": "\033[5~", "pagedown": "\033[6~", "tab": "\t"}
-FINISHED_MARKER = "·  finished"
+KEYS = {
+    "up": "\033[A",
+    "down": "\033[B",
+    "left": "\033[D",
+    "right": "\033[C",
+    "pageup": "\033[5~",
+    "pagedown": "\033[6~",
+    "home": "\033[H",
+    "end": "\033[F",
+    "tab": "\t",
+    "shift+tab": "\033[Z",
+    "backtab": "\033[Z",
+    "enter": "\r",
+    "escape": "\033",
+}
+# Mouse keys name the cell, counting from 1: `click:COLUMN:ROW`, `scrollup:COLUMN:ROW`, `scrolldown:COLUMN:ROW`.
+MOUSE_BUTTONS = {"click": 0, "scrollup": 64, "scrolldown": 65}
+FINISHED_MARKER = "✔ finished"
 READ_SIZE = 65536
 SETTLE_SECONDS = 0.5
 CELL_WIDTH = 9
@@ -52,6 +70,16 @@ PALETTE = {
     "brightcyan": "#29b8db",
     "brightwhite": "#ffffff",
 }
+
+
+def key_sequence(key: str) -> str:
+    """What the terminal sends for `key`: an escape sequence, an SGR mouse report, or the key itself."""
+    kind, _, cell = key.partition(":")
+    if kind in MOUSE_BUTTONS and cell:
+        column, _, row = cell.partition(":")
+        press = f"\033[<{MOUSE_BUTTONS[kind]};{column};{row}M"
+        return press + (f"\033[<0;{column};{row}m" if kind == "click" else "")
+    return KEYS.get(key, key)
 
 
 def parse_size(text: str) -> tuple[int, int]:
@@ -137,7 +165,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("project", type=Path)
     parser.add_argument("--size", type=parse_size, default=(120, 36), help="COLUMNSxLINES (default 120x36)")
-    parser.add_argument("--keys", default="down,tab,q", help="keys to send once the run has finished")
+    parser.add_argument("--keys", default="2,down,q", help="keys to send once the run has finished")
+    parser.add_argument("--delay", type=float, default=0.0, help="seconds to wait after the run before the keys")
     parser.add_argument("--interval", type=float, default=1.0, help="seconds between frames during the run")
     parser.add_argument("--out", type=Path, default=Path("ui-snapshots"))
     parser.add_argument("--timeout", type=float, default=600.0)
@@ -154,14 +183,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         running = pump(descriptor, stream, options.interval)
         save_frame(screen, options.out, f"frame-{frame:03}")
         frame += 1
+    if running and options.delay > 0:
+        running = pump(descriptor, stream, options.delay)
     keys = [key for key in options.keys.split(",") if key]
     sent = 0
     for number, key in enumerate(keys, start=1):
         if not running:
             break
-        os.write(descriptor, KEYS.get(key, key).encode())
+        os.write(descriptor, key_sequence(key).encode())
         running = pump(descriptor, stream, SETTLE_SECONDS)
-        save_frame(screen, options.out, f"key-{number:02}-{key}")
+        save_frame(screen, options.out, f"key-{number:02}-{key.replace(':', '-')}")
         sent = number
     if running:
         pump(descriptor, stream, SETTLE_SECONDS)

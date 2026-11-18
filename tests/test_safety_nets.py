@@ -8,10 +8,13 @@ from strain.safety_nets import (
     Level,
     SafetyNet,
     build_wide_problems,
+    classify_failures,
     describe_build_wide,
     describe_missing,
+    fix,
     missing_safety_nets,
     resolve_levels,
+    why,
 )
 
 FULL_FLAGS = (
@@ -162,6 +165,40 @@ class ResolveLevelsTest(unittest.TestCase):
     def test_unknown_config_key_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             resolve_levels(config={"msan": "error"}, cli=None)
+
+
+class ClassifyFailuresTest(unittest.TestCase):
+    def test_error_levels_stop_the_run_and_the_rest_are_kept_with_why_they_matter(self) -> None:
+        failures = {
+            SafetyNet.OPTIMIZATION: "fails in 1 translation unit(s), e.g. /s/a.cpp",
+            SafetyNet.ASAN: "fails in 2 translation unit(s), e.g. /s/b.cpp",
+            SafetyNet.NDEBUG: "fails in 1 translation unit(s), e.g. /s/c.cpp",
+        }
+        levels = {**DEFAULT_LEVELS, SafetyNet.ASAN: Level.WARN, SafetyNet.OPTIMIZATION: Level.IGNORE}
+        errors, relaxed = classify_failures(failures, levels)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("safety net ndebug fails in 1 translation unit(s), e.g. /s/c.cpp; remove -DNDEBUG", errors[0])
+        self.assertEqual(
+            [(failure.net, failure.level) for failure in relaxed],
+            [
+                (SafetyNet.ASAN, Level.WARN),
+                (SafetyNet.OPTIMIZATION, Level.IGNORE),
+            ],
+        )
+        asan, optimization = relaxed
+        self.assertTrue(asan.hides_bugs)
+        self.assertIs(asan.default, Level.ERROR)
+        self.assertFalse(optimization.hides_bugs)
+        self.assertEqual(asan.fix, "add -fsanitize=address")
+        self.assertIn("out-of-bounds", asan.why)
+        self.assertEqual(asan.message, describe_missing(SafetyNet.ASAN, [Path("/s/b.cpp"), Path("/s/x.cpp")]))
+
+    def test_every_explanation_splits_into_a_fix_and_a_reason(self) -> None:
+        for net in SafetyNet:
+            with self.subTest(net=net):
+                self.assertTrue(fix(net))
+                self.assertIn("mutant", why(net))
+                self.assertEqual(f"{fix(net)}: {why(net)}", EXPLANATIONS[net])
 
 
 if __name__ == "__main__":

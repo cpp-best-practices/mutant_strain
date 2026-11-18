@@ -4,7 +4,7 @@
 
 strain changes your code in small ways (`<` becomes `<=`, `&&` becomes `||`) and checks whether your tests notice. Every mutant that survives points at a test that runs the code but doesn't really check it.
 
-![The strain run --ui live dashboard in an 80x24 terminal, listing three survivors and showing the selected one as a diff with a hint](docs/images/dashboard-80x24.png)
+![The strain run --ui live TUI in a 120x36 terminal: the Survivors tab lists three survivors and shows the selected one with its coverage, a hint and a highlighted diff](docs/images/tui-120x36.png)
 
 *`strain run --ui live` on `tests/fixtures/sample_project` after the run, with the second survivor selected.*
 
@@ -37,14 +37,14 @@ Notes for whoever fills this in (human or Claude Code):
 - Optional:
   - `cppcheck`: the best mutation engine
   - `tree-sitter`: the fallback engine (pip)
-  - `rich`: the live dashboard (pip)
+  - `textual`: the live TUI, `--ui live` (pip)
 
 ## Install
 
 ```sh
 # TODO(claude): replace once packaging exists
 pip install strain            # core
-pip install "strain[ui]"      # with the live dashboard
+pip install "strain[ui]"      # with the live TUI
 ```
 
 ## Quick start
@@ -72,6 +72,8 @@ strain run --build-dir build-strain -R parser    # only tests matching "parser"
 strain run --build-dir build-strain --since main # only lines changed since main
 ```
 
+Add `--ui live` (with `strain[ui]` installed) to watch the run in a full-screen TUI, described [below](#live-tui).
+
 ### 3. Read the results
 
 <!-- TODO(claude): paste a real console summary once one exists -->
@@ -84,6 +86,36 @@ Action items
   2. lexer.cpp:88  `==` → `!=` survived (not_reached): add a test where tok != END
   3. parser.cpp:97 `+` → `-` survived (not_detected): assert the computed offset
 ```
+
+## Live TUI
+
+`strain run --ui live` shows the run in a full-screen TUI built on [Textual](https://textual.textualize.io/). Without
+Textual installed, it warns and prints plain output instead. Use the keyboard or the mouse.
+
+| View | Shows |
+|------|-------|
+| `1` Run | The mutated code as a highlighted diff, the mutant queue with each result and time, findings and the build log |
+| `2` Survivors | Each survivor with its coverage, the tests it survived, a hint and its source, and the score of each file |
+| `3` Mutants | Every mutant so far, filtered by state, with the same details |
+| `4` Stats | The [safety nets](#safety-nets) the configuration let fail, why each matters and how to fix it; scores by file, operator and test; the slowest mutants |
+| `5` Log | The full console output |
+
+Above the views, the header shows the score with its history, the totals, the elapsed time and an estimate of the time
+left. When a safety net fails but its level is `warn` or `ignore`, a `! N safety nets off` badge appears there; click it
+for the details. It is red when one of those nets errors by default, because then a mutant that breaks the code can
+survive, and each survivor's details carry the same caution. Under it, a bar has one cell per mutant, colored by its result: hover to name a mutant, click to show it in the
+queue.
+
+| Key | Does |
+|-----|------|
+| `1`–`5`, `tab`, `shift+tab` | Switch views; or click a tab |
+| `↑` `↓`, `PgUp` `PgDn` | Move through a list; in Run, look at another mutant while the run goes on |
+| `enter` | In Run, open the selected mutant in Mutants |
+| `f` | In Run, follow the running mutant again; in Mutants, show the next state filter |
+| `p` | Pause before the next mutant starts, with the sources unmutated; press again to resume |
+| `ctrl+c` | Stop the run: strain restores the sources and writes the reports, as with `--resume` |
+| `q` | Leave once the run has finished, then print the plain summary |
+| `?`, `ctrl+p` | Show every key; open the command palette, which also changes the theme |
 
 ## How it works
 
