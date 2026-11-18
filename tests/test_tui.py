@@ -251,6 +251,22 @@ class StrainAppTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("all tests", header)
             self.assertIn("finished", header)
 
+    async def test_every_table_fits_its_panel_at_120_columns(self) -> None:
+        async with self.app.run_test(size=SIZE) as pilot:
+            run_two_mutants(self.console)
+            self.console.run_finished()
+            await self.settle(pilot)
+            for key, tables in (
+                ("2", ("#survivor-table", "#survivor-files")),
+                ("3", ("#mutant-table",)),
+                ("4", ("#stats-files", "#stats-operators")),
+            ):
+                await pilot.press(key)
+                await self.settle(pilot)
+                for table_id in tables:
+                    table = self.app.query_one(table_id, DataTable)
+                    self.assertEqual(table.max_scroll_x, 0, f"{table_id} scrolls sideways")
+
     async def test_small_terminals_still_render(self) -> None:
         async with self.app.run_test(size=(40, 12)) as pilot:
             run_two_mutants(self.console)
