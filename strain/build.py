@@ -45,9 +45,16 @@ class CompileCommand:
     def has_source_based_coverage(self) -> bool:
         return any(argument in SOURCE_BASED_COVERAGE_FLAGS for argument in self.arguments)
 
-    def passes_syntax_check(self) -> bool:
-        completed = subprocess.run(self.syntax_only_arguments(), cwd=self.directory, capture_output=True)
-        return completed.returncode == 0
+    def syntax_check(self) -> str | None:
+        """None when the file compiles with -fsyntax-only, or else the compiler's diagnostics.
+
+        -fsyntax-only still evaluates `static_assert` and constant expressions, so its diagnostics tell a mutant that
+        fails a compile-time check from one that is invalid code.
+        """
+        completed = subprocess.run(
+            self.syntax_only_arguments(), cwd=self.directory, capture_output=True, text=True, errors="replace"
+        )
+        return None if completed.returncode == 0 else completed.stdout + completed.stderr
 
 
 def _command_from_entry(entry: Mapping[str, Any]) -> CompileCommand:

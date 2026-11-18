@@ -7,6 +7,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Self, TextIO
 
+from .compile_time import COMPILE_TIME_TEST, NOT_MUTATED_HEADING, NOT_MUTATED_HINT, NotMutated
 from .mutators import Mutant
 from .results import (
     DETECTED_STATES,
@@ -22,6 +23,7 @@ MUTATION_TESTING_ELEMENTS_STATUS = {
     MutantState.KILLED: "Killed",
     MutantState.KILLED_BY_SANITIZER: "Killed",
     MutantState.KILLED_BY_RESOURCE_LIMIT: "Killed",
+    MutantState.KILLED_AT_COMPILE_TIME: "Killed",
     MutantState.TIMEOUT: "Timeout",
     MutantState.SURVIVED: "Survived",
     MutantState.SKIPPED_UNEVALUATED: "Ignored",
@@ -39,13 +41,15 @@ def format_score(score: float | None) -> str:
 
 def summary_line(test: str, results: Sequence[MutantResult], width: int) -> str:
     states = [result.state for result in results]
-    # Rare enough to show only when it happens.
+    # Rare enough to show only when they happen.
     memory = states.count(MutantState.KILLED_BY_RESOURCE_LIMIT)
+    compile_time = states.count(MutantState.KILLED_AT_COMPILE_TIME)
     return (
         f"{test:<{width}}   score {format_score(mutation_score(states))}"
         f"   killed {states.count(MutantState.KILLED)}"
         f"  sanitizer {states.count(MutantState.KILLED_BY_SANITIZER)}"
         f"{f'  memory {memory}' if memory else ''}"
+        f"{f'  compile-time {compile_time}' if compile_time else ''}"
         f"  timeout {states.count(MutantState.TIMEOUT)}"
         f"  survived {states.count(MutantState.SURVIVED)}"
     )
@@ -113,6 +117,8 @@ def file_scores(combined: Iterable[CombinedResult]) -> list[FileScore]:
 def hint(entry: CombinedResult) -> str:
     if entry.survivor is SurvivorKind.NOT_REACHED:
         return NOT_REACHED_HINT
+    if entry.covered_by == (COMPILE_TIME_TEST,):
+        return f"add a static_assert where `{entry.mutant.original}` and `{entry.mutant.replacement}` give different results"
     if entry.mutant.operator == "aor":
         return "assert the computed value"
     if entry.mutant.operator == "asr":
@@ -203,11 +209,26 @@ def _markdown_survivors(combined: Sequence[CombinedResult]) -> list[str]:
     ]
 
 
-def markdown_summary(combined: Sequence[CombinedResult], threshold: float | None) -> str:
+def _markdown_not_mutated(not_mutated: Sequence[NotMutated]) -> list[str]:
+    if not not_mutated:
+        return []
+    return [
+        "",
+        f"### {NOT_MUTATED_HEADING}",
+        "",
+        f"{NOT_MUTATED_HINT.capitalize()}.",
+        "",
+        *(f"- `{entry.location}` {entry.summary().partition(' ')[2]}" for entry in not_mutated),
+    ]
+
+
+def markdown_summary(
+    combined: Sequence[CombinedResult], threshold: float | None, not_mutated: Sequence[NotMutated] = ()
+) -> str:
     """A summary for CI pages such as `$GITHUB_STEP_SUMMARY` or a pull request comment."""
     heading = ["## strain mutation testing", ""]
     if not combined:
-        return "\n".join([*heading, "No mutants were generated."]) + "\n"
+        return "\n".join([*heading, "No mutants were generated.", *_markdown_not_mutated(not_mutated)]) + "\n"
     score = mutation_score(entry.state for entry in combined)
     lines = [
         *heading,
@@ -217,6 +238,7 @@ def markdown_summary(combined: Sequence[CombinedResult], threshold: float | None
         "",
         *_markdown_file_table(combined),
         *_markdown_survivors(combined),
+        *_markdown_not_mutated(not_mutated),
     ]
     return "\n".join(lines) + "\n"
 
@@ -238,14 +260,27 @@ def _mutant_element(entry: CombinedResult) -> dict[str, Any]:
     }
 
 
-def mutation_testing_elements(combined: Iterable[CombinedResult], sources: Mapping[str, str]) -> dict[str, Any]:
+def not_mutated_json(not_mutated: Sequence[NotMutated]) -> list[dict[str, Any]]:
+    return [
+        {"file": entry.file, "function": entry.function, "lines": list(entry.lines), "mutants": entry.mutants}
+        for entry in not_mutated
+    ]
+
+
+def mutation_testing_elements(
+    combined: Iterable[CombinedResult], sources: Mapping[str, str], not_mutated: Sequence[NotMutated] = ()
+) -> dict[str, Any]:
+    """The report in the mutation-testing-elements schema, plus `compileTimeOnly`: the constexpr code not mutated."""
     files: dict[str, Any] = {}
     for entry in combined:
         file_report = files.setdefault(
             entry.mutant.file, {"language": "cpp", "source": sources[entry.mutant.file], "mutants": []}
         )
         file_report["mutants"].append(_mutant_element(entry))
-    return {"schemaVersion": "1", "thresholds": {"high": 80, "low": 60}, "files": files}
+    report: dict[str, Any] = {"schemaVersion": "1", "thresholds": {"high": 80, "low": 60}, "files": files}
+    if not_mutated:
+        report["compileTimeOnly"] = not_mutated_json(not_mutated)
+    return report
 
 
 PreviousResults = dict[tuple[str, str], tuple[MutantState, SurvivorKind | None]]

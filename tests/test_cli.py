@@ -41,6 +41,7 @@ EVERY_OPTION = (
     "3",
     "--memory-limit",
     "2048",
+    "--compile-time",
     "--resume",
     "--all",
     "--report-dir",
@@ -64,6 +65,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertFalse(options.strict)
         self.assertIsNone(options.max_per_line)
         self.assertIsNone(options.memory_limit)
+        self.assertFalse(options.compile_time)
         self.assertFalse(options.resume)
         self.assertFalse(options.show_all)
         self.assertIs(options.engine, Engine.AUTO)
@@ -82,6 +84,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertTrue(options.strict)
         self.assertEqual(options.max_per_line, 3)
         self.assertEqual(options.memory_limit, 2048)
+        self.assertTrue(options.compile_time)
         self.assertTrue(options.resume)
         self.assertTrue(options.show_all)
         self.assertEqual(options.report_dir, Path("out"))

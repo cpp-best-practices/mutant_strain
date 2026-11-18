@@ -83,6 +83,11 @@ def _add_policy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--strict", action="store_true", help="abort if any test is excluded")
     parser.add_argument("--max-per-line", type=_positive_int, metavar="N", help="cap mutants per source line")
     parser.add_argument(
+        "--compile-time",
+        action="store_true",
+        help="also mutate constexpr code no test runs; a failed static_assert or constant evaluation kills a mutant",
+    )
+    parser.add_argument(
         "--memory-limit",
         type=_megabytes,
         metavar="MB",
@@ -129,6 +134,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         strict=arguments.strict,
         max_per_line=arguments.max_per_line,
         memory_limit=arguments.memory_limit,
+        compile_time=arguments.compile_time,
         resume=arguments.resume,
         show_all=arguments.show_all,
         ui=arguments.ui,

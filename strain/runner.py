@@ -4,6 +4,7 @@ import enum
 import json
 import math
 import os
+import re
 import shlex
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -29,6 +30,16 @@ from .build import (
 from .build_cache import BuildFailureCache, cache_path
 from .config import CONFIG_FILE, Config, load_config
 from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, create_console, plural, score_style
+from .compile_time import (
+    COMPILE_TIME_TEST,
+    KILLED_AT_COMPILE_TIME,
+    NOT_MUTATED_HEADING,
+    NOT_MUTATED_HINT,
+    NotMutated,
+    compile_time_check_failure,
+    constant_lines,
+    not_mutated,
+)
 from .coverage import FileCoverage, GcovCoverage
 from .estimate import Estimate, MutantCost, format_eta
 from .journal import Journal
@@ -87,6 +98,9 @@ TIMEOUT_FACTOR = 3.0
 MEMORY_FACTOR = 4
 MINIMUM_MEMORY_MEGABYTES = 512
 DEFAULT_ACTION_ITEMS = 10
+CXX_SUFFIXES = frozenset(
+    {".h", ".hh", ".hpp", ".hxx", ".h++", ".ipp", ".inl", ".tpp", ".c", ".cc", ".cpp", ".cxx", ".c++"}
+)
 SOURCE_ENCODING = "utf-8"
 SOURCE_ERRORS = "surrogateescape"
 
@@ -127,6 +141,7 @@ class RunOptions:
     max_per_line: int | None = None
     # Megabytes per test run with a mutant; None derives it from the baseline, and 0 turns the limit off.
     memory_limit: int | None = None
+    compile_time: bool = False
     resume: bool = False
     show_all: bool = False
     ui: UiMode = UiMode.AUTO
@@ -210,6 +225,39 @@ class Outcome:
     detail: str = ""
 
 
+# An absolute path in a compiler diagnostic: it ends at whitespace, a colon, a quote or a bracket.
+ABSOLUTE_PATH = re.compile(r"(?<![\w.])/[^\s:'\"()\[\]]+")
+
+
+def relative_paths(diagnostics: str, source_dir: Path) -> str:
+    """`diagnostics` with paths in the project relative to it, so details and the build cache stay short.
+
+    A path counts if it resolves into the project, so a symlinked spelling such as macOS's /var for /private/var
+    is shortened too.
+    """
+
+    def shorten(match: re.Match[str]) -> str:
+        try:
+            return Path(match.group(0)).resolve().relative_to(source_dir).as_posix()
+        except (OSError, ValueError):
+            return match.group(0)
+
+    return ABSOLUTE_PATH.sub(shorten, diagnostics)
+
+
+def failure_description(diagnostics: str, otherwise: str) -> str:
+    """Why a mutant did not build: the compile-time check it failed, which kills it, or else `otherwise`."""
+    check = compile_time_check_failure(diagnostics)
+    return otherwise if check is None else f"{KILLED_AT_COMPILE_TIME}: {check}"
+
+
+def build_failure_state(failure: str) -> MutantState:
+    """A failed compile-time check detects the mutant; any other build failure only means it is invalid code."""
+    return (
+        MutantState.KILLED_AT_COMPILE_TIME if failure.startswith(KILLED_AT_COMPILE_TIME) else MutantState.COMPILE_ERROR
+    )
+
+
 def survivor_kind(coverage: FileCoverage, line: int) -> SurvivorKind | None:
     line_coverage = coverage.lines.get(line)
     if line_coverage is None or line_coverage.branches == 0:
@@ -240,6 +288,10 @@ class Runner:
         self.test_targets: dict[str, Target] = {}
         self.test_executables: dict[str, Path] = {}
         self.memory_limits: dict[str, ctest.MemoryLimit] = {}
+        self.build_log: list[str] = []
+        # Every line some test ran without a mutant, by file, to find the constexpr code that only the compiler runs.
+        self.runtime_lines: dict[Path, set[int]] = {}
+        self.compile_time_only: list[NotMutated] = []
         self.times = MutantTimes()
         self.eta = ""
         self.build_is_mutated = False
@@ -254,9 +306,16 @@ class Runner:
         console.field("reports", str(self.options.report_dir), 7)
 
     def build(self, target: str | None = None) -> bool:
+        """Builds `target`, keeping what it printed in `build_log` to tell a failed compile-time check apart."""
         self.console.build_started(shlex.join(build_command(Path(short_path(self.build_dir)), target, self.build_jobs)))
+        self.build_log = []
+
+        def show(line: str) -> None:
+            self.build_log.append(line)
+            self.console.build_output(line)
+
         try:
-            return build(self.build_dir, target, self.console.build_output, self.build_jobs)
+            return build(self.build_dir, target, show, self.build_jobs)
         finally:
             self.build_clock.build_finished()
 
@@ -468,11 +527,13 @@ class Runner:
         """Compiles the mutated source; returns why it does not build, or None when it does."""
         command = self.database.command_for(planned.source.path)
         self.console.status(f"{label}  checking syntax…")
-        if command is not None and not command.passes_syntax_check():
-            return "rejected by -fsyntax-only"
+        diagnostics = None if command is None else command.syntax_check()
+        if diagnostics is not None:
+            return failure_description(relative_paths(diagnostics, self.source_dir), "rejected by -fsyntax-only")
         self.console.status(f"{label}  building…")
-        if not all(self.build(target) for target in targets):
-            return "build failed"
+        for target in targets:
+            if not self.build(target):
+                return failure_description(relative_paths("\n".join(self.build_log), self.source_dir), "build failed")
         return None
 
     def build_mutant(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> Outcome | None:
@@ -482,14 +543,14 @@ class Runner:
         if failure is None:
             return None
         self.build_failures.add(planned.mutant, failure)
-        return Outcome(MutantState.COMPILE_ERROR, detail=failure)
+        return Outcome(build_failure_state(failure), detail=failure)
 
     def known_build_failure(self, planned: PlannedMutant) -> Outcome | None:
-        """The compile error a mutant known to break the build gets without mutating or building anything."""
+        """The outcome a mutant known not to build gets without mutating or building anything."""
         failure = self.build_failures.failure(planned.mutant)
-        return (
-            None if failure is None else Outcome(MutantState.COMPILE_ERROR, detail=f"{failure}, known from the cache")
-        )
+        if failure is None:
+            return None
+        return Outcome(build_failure_state(failure), detail=f"{failure}, known from the cache")
 
     def run_mutated(self, test: str, timeout: float, coverage: FileCoverage, line: int, label: str) -> Outcome:
         self.console.status(f"{label}  running {test}…")
@@ -575,6 +636,7 @@ class Runner:
         timeout = mutant_timeout(duration)
         coverage = self.coverage.collect()
         self.verify_coverage_data(test, coverage)
+        self.note_runtime_lines(coverage)
         planned = self.plan_mutants(self.source_files(coverage, self.test_code(test)))
         self.console.plan([entry.mutant for entry in planned])
         estimate = Estimate([MutantCost(entry.mutant.file, duration) for entry in planned])
@@ -612,6 +674,89 @@ class Runner:
         )
         self.show_mutant(progress, entry.mutant, outcome.state, outcome.detail)
         return outcome.state
+
+    def note_runtime_lines(self, coverage: dict[Path, FileCoverage]) -> None:
+        for path, file_coverage in coverage.items():
+            self.runtime_lines.setdefault(path.resolve(), set()).update(file_coverage.executed_lines())
+
+    def project_files(self, tests: Sequence[str]) -> Iterator[SourceFile]:
+        """The project's C++ sources and headers that might hold constexpr code: not test code, not excluded."""
+        test_code = frozenset().union(*(self.test_code(test) for test in tests))
+        for directory, subdirectories, files in os.walk(self.source_dir):
+            folder = Path(directory)
+            subdirectories[:] = sorted(
+                name
+                for name in subdirectories
+                if not name.startswith(".") and not (folder / name).resolve().is_relative_to(self.build_dir)
+            )
+            for name in sorted(files):
+                path = (folder / name).resolve()
+                if path.suffix not in CXX_SUFFIXES or path in test_code:
+                    continue
+                relative = path.relative_to(self.source_dir).as_posix()
+                data = path.read_bytes()
+                if self.config.is_excluded(relative) or (b"constexpr" not in data and b"consteval" not in data):
+                    continue
+                yield SourceFile(path, relative, data.decode(SOURCE_ENCODING, SOURCE_ERRORS), FileCoverage())
+
+    def compile_time_mutants(self, tests: Sequence[str]) -> list[tuple[PlannedMutant, str]]:
+        """The mutants on lines of constexpr and consteval functions that no test ran, with each function's name."""
+        found: list[tuple[PlannedMutant, str]] = []
+        for source in self.project_files(tests):
+            executed = self.runtime_lines.get(source.path, set())
+            functions = {line: name for line, name in constant_lines(source.text).items() if line not in executed}
+            lines = set(functions)
+            if self.since is not None:
+                lines &= self.since.get(source.relative, set())
+            suppressed = frozenset(suppressed_lines(source.text, self.config.arid))
+            for mutant in mutants_at(source.relative, self.sites_for(source), lines, self.options.max_per_line):
+                found.append((PlannedMutant(source, suppressed, mutant), functions[mutant.line]))
+        return found
+
+    def check_compile_time(self, tests: Sequence[str], events: EventLog) -> None:
+        """Reports the constexpr code no test runs, or with --compile-time mutates it and builds each mutant."""
+        found = self.compile_time_mutants(tests)
+        if not self.options.compile_time:
+            self.compile_time_only = not_mutated(found)
+            return
+        if found:
+            self.run_compile_time(
+                [planned for planned, _ in found], {planned.mutant.id: name for planned, name in found}, events
+            )
+
+    def run_compile_time(
+        self, planned: Sequence[PlannedMutant], functions: Mapping[str, str], events: EventLog
+    ) -> None:
+        self.console.heading("Compile time")
+        self.console.test_started(COMPILE_TIME_TEST, 1, 1)
+        self.console.note(f"{plural(len(planned), 'mutant')} on constexpr lines no test runs")
+        self.console.plan([entry.mutant for entry in planned])
+        estimate = Estimate([MutantCost(entry.mutant.file, 0.0) for entry in planned])
+        self.eta = ""
+        width = len(str(len(planned)))
+        for number, entry in enumerate(planned, start=1):
+            progress = f"[{number:>{width}}/{len(planned)}]"
+            self.console.mutant_started(number - 1, entry.source.text, entry.mutant)
+            with self.estimating(estimate, number - 1, events):
+                outcome = self.evaluate_at_compile_time(entry, f"  {progress} {describe_mutant(entry.mutant)}")
+            result = MutantResult(entry.mutant, COMPILE_TIME_TEST, outcome.state, None, functions[entry.mutant.id])
+            self.record(result, events)
+            self.console.mutant_evaluated(result, entry.source.text, None)
+            self.show_mutant(progress, entry.mutant, outcome.state, outcome.detail)
+            self.console.mutant_finished(number - 1, outcome.state)
+        self.rebuild_if_mutated()
+
+    def evaluate_at_compile_time(self, planned: PlannedMutant, label: str) -> Outcome:
+        """Builds everything with the mutant in place: only a failed compile-time check can detect it."""
+        ignored = self.ignored_outcome(planned)
+        if ignored is not None:
+            return ignored
+        known = self.known_build_failure(planned)
+        if known is not None:
+            return known
+        with self.mutated(planned):
+            problem = self.build_mutant(planned, [None], label)
+        return problem or Outcome(MutantState.SURVIVED, detail="builds, and no test runs this line")
 
     def verify_coverage_data(self, test: str, coverage: dict[Path, FileCoverage]) -> None:
         if self.coverage_verified:
@@ -682,11 +827,20 @@ class Runner:
 
     def write_reports(self, combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> None:
         report_dir = self.options.report_dir
-        (report_dir / "report.json").write_text(
-            json.dumps(mutation_testing_elements(combined, sources), indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        (report_dir / "index.html").write_text(html_report(combined, sources), encoding="utf-8")
-        (report_dir / "summary.md").write_text(markdown_summary(combined, self.options.threshold), encoding="utf-8")
+        not_mutated = self.compile_time_only
+        report = mutation_testing_elements(combined, sources, not_mutated)
+        (report_dir / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        (report_dir / "index.html").write_text(html_report(combined, sources, not_mutated), encoding="utf-8")
+        summary = markdown_summary(combined, self.options.threshold, not_mutated)
+        (report_dir / "summary.md").write_text(summary, encoding="utf-8")
+
+    def show_not_mutated(self) -> None:
+        if not self.compile_time_only:
+            return
+        self.console.heading(NOT_MUTATED_HEADING)
+        for entry in self.compile_time_only:
+            self.console.line(f"  · {entry.summary()}")
+        self.console.line(f"  {self.console.paint(NOT_MUTATED_HINT, DIM)}")
 
     def show_survivors(self, combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> None:
         survivors = [entry for entry in combined if entry.state is MutantState.SURVIVED]
@@ -770,6 +924,7 @@ class Runner:
                 continue
             coverage = self.coverage.collect()
             self.verify_coverage_data(test, coverage)
+            self.note_runtime_lines(coverage)
             baselined.append(BaselinedTest(test, duration, self.source_files(coverage, self.test_code(test))))
         return baselined
 
@@ -900,9 +1055,12 @@ class Runner:
         """Without --since, a run that mutated nothing tested nothing, so it must not pass."""
         if combined or self.options.since is not None:
             return
+        compile_time = sum(entry.mutants for entry in self.compile_time_only)
+        hint = f"; {plural(compile_time, 'mutant')} wait on constexpr lines no test runs: try --compile-time"
         raise StrainError(
             "no mutant was generated for any test, so nothing was mutation tested; check that the tests pass, that "
             f"the build writes coverage data and that {CONFIG_FILE} does not exclude every source"
+            f"{hint if compile_time else ''}"
         )
 
     def report(self, combined: Sequence[CombinedResult], events: EventLog, ending: str, start: float) -> float | None:
@@ -914,6 +1072,7 @@ class Runner:
         self.show_survivors(combined, sources)
         self.show_action_items(combined)
         self.show_files(combined)
+        self.show_not_mutated()
         self.show_summary(combined, score)
         self.console.line(f"\n{self.console.paint(f'{ending} after {time.monotonic() - start:.1f}s', DIM)}")
         return score
@@ -935,6 +1094,7 @@ class Runner:
                 self.console.step(f"resuming: {plural(len(events.previous_results()), 'earlier result')} reused")
             try:
                 self.run_strategy(tests, events)
+                self.check_compile_time(tests, events)
             except KeyboardInterrupt:
                 self.report(combine(self.results), events, "interrupted", start)
                 raise
