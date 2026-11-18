@@ -97,6 +97,21 @@ SINGLE_TEST_STATES = [
 ]
 
 
+RECOGNISER_HEADER = "[[nodiscard]] bool is_identifier_start(char c);\n"
+RECOGNISER_SOURCE = """#include "sample.hpp"
+
+bool is_identifier_start(char c)
+{
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+"""
+# Weak on purpose: only inputs that must be accepted, none at a limit, none that must be rejected.
+RECOGNISER_TEST = """#include "sample.hpp"
+
+int main() { return is_identifier_start('m') && is_identifier_start('M') && is_identifier_start('_') ? 0 : 1; }
+"""
+
+
 def run_strain(*argv: str) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -502,6 +517,37 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("interrupted after", transcript)
         self.assertEqual(console.finished_runs, 0)
         self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+
+    def test_survivors_of_weak_tests_group_into_the_patterns_that_name_the_missing_tests(self) -> None:
+        (self.root / "include" / "sample.hpp").write_text(RECOGNISER_HEADER)
+        (self.root / "src" / "sample.cpp").write_text(RECOGNISER_SOURCE)
+        (self.root / "tests" / "sample_tests.cpp").write_text(RECOGNISER_TEST)
+        (self.root / "tests" / "other_tests.cpp").write_text("int main() { return 0; }\n")
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = run_strain(
+            *("--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir)),
+            *("-R", "^sample_tests$", "--engine", "lexer"),
+        )
+
+        self.assertEqual(exit_code, 0, stdout)
+        boundary = "4 survivors move a comparison's limit by one in sample.cpp: add a test exactly at the limit"
+        and_to_or = (
+            "2 survivors turn `&&` into `||` in sample.cpp: add inputs that must be rejected, "
+            "since the tests check only what is accepted"
+        )
+        hotspot = "hotspot: is_identifier_start() in sample.cpp has 6 survivors"
+        self.assertIn(f"▸ Patterns\n  · {boundary}\n  · {and_to_or}\n  · {hotspot}", stdout)
+        summary = (self.report_dir / "summary.md").read_text()
+        self.assertIn(f"### Patterns\n\n- {boundary}\n- {and_to_or}\n- {hotspot}", summary)
+        report = json.loads((self.report_dir / "report.json").read_text())
+        primary = [pattern for pattern in report["patterns"] if pattern["primary"]]
+        self.assertEqual(
+            [(pattern["kind"], pattern["survivors"]) for pattern in primary], [("boundary", 4), ("and-to-or", 2)]
+        )
+        ids = [mutant for pattern in primary for mutant in pattern["mutants"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn("<h2>Patterns</h2>", (self.report_dir / "index.html").read_text())
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)

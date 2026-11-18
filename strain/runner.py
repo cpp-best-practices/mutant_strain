@@ -43,6 +43,7 @@ from .mutators import (
 )
 from .operator_sites import EngineError, OperatorSite
 from .html_report import html_report
+from .patterns import pattern_lines
 from .report import (
     EventLog,
     FileScore,
@@ -614,6 +615,14 @@ class Runner:
             f"  {console.paint(f'{row.survived} survived', survived_style)}"
         )
 
+    def show_patterns(self, combined: Sequence[CombinedResult]) -> None:
+        """The groups of survivors that one kind of test would kill, ahead of the survivors one by one."""
+        lines = pattern_lines(combined)
+        if lines:
+            self.console.heading("Patterns")
+            for line in lines:
+                self.console.line(f"  · {line}")
+
     def show_action_items(self, combined: Sequence[CombinedResult]) -> None:
         items = action_items(combined, limit=None if self.options.show_all else DEFAULT_ACTION_ITEMS)
         if items:
@@ -791,6 +800,7 @@ class Runner:
         self.write_reports(combined, sources)
         events.emit(ending, score=score)
         self.show_survivors(combined, sources)
+        self.show_patterns(combined)
         self.show_action_items(combined)
         self.show_files(combined)
         self.show_summary(combined, score)
