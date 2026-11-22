@@ -29,6 +29,7 @@ from .build_cache import BuildFailureCache, cache_path
 from .config import CONFIG_FILE, Config, load_config
 from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, create_console, plural, score_style
 from .coverage import FileCoverage, GcovCoverage
+from .estimate import BuildTimes, Eta, Order, format_eta
 from .journal import Journal
 from .mutators import (
     Engine,
@@ -106,6 +107,7 @@ class RunOptions:
     since: str | None = None
     skip_killed: bool = False
     strategy: Strategy = Strategy.PER_TEST
+    order: Order = Order.COST
     build_cache: bool = True
     engine: Engine = Engine.AUTO
     safety_nets: Level | None = None
@@ -180,6 +182,31 @@ class CoveredMutant:
     tests: list[CoveringTest] = field(default_factory=list)
 
 
+def by_source(entry: PlannedMutant) -> tuple[str, int]:
+    return entry.mutant.file, entry.mutant.offset
+
+
+def mutant_cost(entry: CoveredMutant, build_times: BuildTimes) -> float:
+    """At most what evaluating `entry` takes: building it, then running every test that covers it."""
+    return build_times.estimate(entry.planned.mutant.file) + sum(test.duration for test in entry.tests)
+
+
+def order_mutants(covered: Sequence[CoveredMutant], order: Order, build_times: BuildTimes) -> list[CoveredMutant]:
+    """By file and offset, then for `Order.COST` the cheapest first, so an interrupted run has covered the most."""
+    ordered = sorted(covered, key=lambda entry: by_source(entry.planned))
+    if order is Order.SOURCE:
+        return ordered
+    return sorted(ordered, key=lambda entry: mutant_cost(entry, build_times))
+
+
+def order_planned(planned: Sequence[PlannedMutant], order: Order, build_times: BuildTimes) -> list[PlannedMutant]:
+    """The per-test order: every mutant runs the same test, so the cheapest are those of the fastest files to build."""
+    ordered = sorted(planned, key=by_source)
+    if order is Order.SOURCE:
+        return ordered
+    return sorted(ordered, key=lambda entry: build_times.estimate(entry.mutant.file))
+
+
 @dataclass(frozen=True, slots=True)
 class Outcome:
     state: MutantState
@@ -218,6 +245,10 @@ class Runner:
         self.build_is_mutated = False
         self.coverage_verified = False
         self.build_jobs: int | None = None
+        self.build_times = BuildTimes()
+        self.eta: Eta | None = None
+        self.mutant_started_at = 0.0
+        self.mutant_build_seconds = 0.0
 
     def show_banner(self) -> None:
         console = self.console
@@ -436,11 +467,35 @@ class Runner:
 
     def build_mutant(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> Outcome | None:
         """Compiles the mutated source; returns the compile error outcome, and remembers it, when it does not build."""
+        start = time.monotonic()
         failure = self.build_failure(planned, targets, label)
+        self.observe_build(planned.mutant.file, time.monotonic() - start)
         if failure is None:
             return None
         self.build_failures.add(planned.mutant, failure)
         return Outcome(MutantState.COMPILE_ERROR, detail=failure)
+
+    def observe_build(self, file: str, seconds: float) -> None:
+        self.build_times.observe(file, seconds)
+        self.mutant_build_seconds += seconds
+
+    def start_estimate(self, test_seconds: Sequence[float], files: Sequence[str]) -> None:
+        self.eta = Eta(test_seconds, files, self.build_times)
+
+    def start_mutant(self, index: int, source: str, mutant: Mutant) -> None:
+        self.mutant_started_at = time.monotonic()
+        self.mutant_build_seconds = 0.0
+        self.console.mutant_started(index, source, mutant)
+
+    def finish_estimate(self, index: int) -> None:
+        """Counts mutant `index` as evaluated, so the ETA the console and the events show includes it."""
+        if self.eta is None:
+            return
+        self.eta.finish(index, time.monotonic() - self.mutant_started_at, self.mutant_build_seconds)
+        self.console.eta_estimated(self.eta.remaining())
+
+    def remaining_estimate(self) -> float | None:
+        return None if self.eta is None else self.eta.remaining()
 
     def known_build_failure(self, planned: PlannedMutant) -> Outcome | None:
         """The compile error a mutant known to break the build gets without mutating or building anything."""
@@ -516,15 +571,19 @@ class Runner:
         timeout = mutant_timeout(duration)
         coverage = self.coverage.collect()
         self.verify_coverage_data(test, coverage)
-        planned = self.plan_mutants(self.source_files(coverage, self.test_code(test)))
+        planned = order_planned(
+            self.plan_mutants(self.source_files(coverage, self.test_code(test))), self.options.order, self.build_times
+        )
         self.console.plan([entry.mutant for entry in planned])
+        self.start_estimate([duration] * len(planned), [entry.mutant.file for entry in planned])
         width = len(str(len(planned)))
         results: list[MutantResult] = []
         for number, entry in enumerate(planned, start=1):
             progress = f"[{number:>{width}}/{len(planned)}]"
             label = f"  {progress} {describe_mutant(entry.mutant)}"
-            self.console.mutant_started(number - 1, entry.source.text, entry.mutant)
+            self.start_mutant(number - 1, entry.source.text, entry.mutant)
             outcome = self.outcome_for(test, entry, timeout, events, label)
+            self.finish_estimate(number - 1)
             if outcome is None:
                 self.show_mutant(progress, entry.mutant, "skipped", "already killed by an earlier test")
                 self.console.mutant_finished(number - 1, "skipped")
@@ -574,13 +633,16 @@ class Runner:
             replacement=mutant.replacement,
             state=result.state,
             survivor=result.survivor,
+            eta=self.remaining_estimate(),
         )
 
     def show_mutant(self, progress: str, mutant: Mutant, state: str, detail: str) -> None:
         console = self.console
+        eta = self.remaining_estimate()
+        estimate = "" if eta is None else f"  ETA {format_eta(eta)}"
         console.line(
             f"  {console.paint(progress, DIM)} {console.state(state)} {describe_mutant(mutant)}"
-            f"  {console.paint(f'{detail}  id {mutant.id}', DIM)}"
+            f"  {console.paint(f'{detail}  id {mutant.id}{estimate}', DIM)}"
         )
 
     def read_sources(self, combined: Sequence[CombinedResult]) -> dict[str, str]:
@@ -702,7 +764,7 @@ class Runner:
                 for mutant in self.mutants_for(source):
                     entry = covered.setdefault(mutant.id, CoveredMutant(PlannedMutant(source, suppressed, mutant)))
                     entry.tests.append(CoveringTest(test.name, test.duration, source))
-        return sorted(covered.values(), key=lambda entry: (entry.planned.mutant.file, entry.planned.mutant.offset))
+        return order_mutants(list(covered.values()), self.options.order, self.build_times)
 
     def plan_covered_mutants(self, covered: Sequence[CoveredMutant]) -> None:
         self.console.heading("Mutants")
@@ -761,11 +823,13 @@ class Runner:
             return outcomes
         return outcomes + self.run_covering_tests(entry, remaining, label)
 
-    def evaluate_covered(self, entry: CoveredMutant, events: EventLog, progress: str) -> list[MutantResult]:
+    def evaluate_covered(self, index: int, entry: CoveredMutant, events: EventLog, progress: str) -> list[MutantResult]:
         mutant = entry.planned.mutant
         label = f"  {progress} {describe_mutant(mutant)}"
+        outcomes = self.covered_outcomes(entry, events, label)
+        self.finish_estimate(index)
         results: list[MutantResult] = []
-        for test, outcome in self.covered_outcomes(entry, events, label):
+        for test, outcome in outcomes:
             function = test.source.coverage.function_at(mutant.line)
             results.append(MutantResult(mutant, test.name, outcome.state, outcome.survivor, function))
             self.record(results[-1], events)
@@ -778,11 +842,15 @@ class Runner:
         baselined = self.baseline_tests(tests, events)
         covered = self.cover_mutants(baselined)
         self.plan_covered_mutants(covered)
+        self.start_estimate(
+            [sum(test.duration for test in entry.tests) for entry in covered],
+            [entry.planned.mutant.file for entry in covered],
+        )
         width = len(str(len(covered)))
         results: list[MutantResult] = []
         for number, entry in enumerate(covered, start=1):
-            self.console.mutant_started(number - 1, entry.planned.source.text, entry.planned.mutant)
-            mutant_results = self.evaluate_covered(entry, events, f"[{number:>{width}}/{len(covered)}]")
+            self.start_mutant(number - 1, entry.planned.source.text, entry.planned.mutant)
+            mutant_results = self.evaluate_covered(number - 1, entry, events, f"[{number:>{width}}/{len(covered)}]")
             results += mutant_results
             self.console.mutant_finished(number - 1, combine(mutant_results)[0].state)
         self.rebuild_if_mutated()

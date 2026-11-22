@@ -3,9 +3,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from strain.estimate import BuildTimes, Order
 from strain.mutators import Mutant
 from strain.results import MutantState, SurvivorKind
-from strain.runner import CoveredMutant, CoveringTest, Outcome, PlannedMutant, Runner, short_path
+from strain.runner import CoveredMutant, CoveringTest, Outcome, PlannedMutant, Runner, order_mutants, short_path
 
 MUTANT = Mutant("src/a.cpp", 3, 11, 40, "ror", "<", "<=")
 
@@ -54,6 +55,39 @@ class ResumeTest(unittest.TestCase):
         self.recorded["middle"] = Outcome(MutantState.KILLED)
         self.assertEqual(self.outcomes(), [("middle", MutantState.KILLED)])
         self.runner.run_covering_tests.assert_not_called()  # type: ignore[attr-defined]
+
+
+def covered(mutant: Mutant, *durations: float) -> CoveredMutant:
+    source = mock.sentinel.source
+    return CoveredMutant(
+        PlannedMutant(source, frozenset(), mutant),  # type: ignore[arg-type]
+        [CoveringTest(f"test{number}", duration, source) for number, duration in enumerate(durations)],  # type: ignore[arg-type]
+    )
+
+
+class OrderTest(unittest.TestCase):
+    """The cheapest mutants run first, so most results arrive early; --order source keeps file and offset order."""
+
+    def setUp(self) -> None:
+        self.central = covered(Mutant("src/a.cpp", 1, 5, 4, "aor", "+", "-"), 0.5, 2.0, 9.0)
+        self.leaf = covered(Mutant("src/a.cpp", 9, 5, 90, "ror", "<", "<="), 0.5)
+        self.other = covered(Mutant("src/b.cpp", 2, 5, 10, "lcr", "&&", "||"), 1.0)
+        self.planned = [self.central, self.leaf, self.other]
+
+    def test_cost_order_runs_the_mutants_with_the_cheapest_covering_tests_first(self) -> None:
+        ordered = order_mutants(self.planned, Order.COST, BuildTimes())
+        self.assertEqual(ordered, [self.leaf, self.other, self.central])
+
+    def test_cost_order_counts_what_building_each_file_took(self) -> None:
+        builds = BuildTimes()
+        builds.observe("src/a.cpp", 5.0)
+        builds.observe("src/b.cpp", 1.0)
+        ordered = order_mutants(self.planned, Order.COST, builds)
+        self.assertEqual(ordered, [self.other, self.leaf, self.central])
+
+    def test_source_order_keeps_file_and_offset_order(self) -> None:
+        ordered = order_mutants([self.other, self.leaf, self.central], Order.SOURCE, BuildTimes())
+        self.assertEqual(ordered, [self.central, self.leaf, self.other])
 
 
 if __name__ == "__main__":

@@ -298,7 +298,7 @@ class EndToEndTest(unittest.TestCase):
         lines = (self.report_dir / "events.jsonl").read_text().splitlines()
         return [event for event in map(json.loads, lines) if event["event"] == "mutant"]
 
-    def run_per_mutant(self) -> tuple[int, str, str]:
+    def run_per_mutant(self, *argv: str) -> tuple[int, str, str]:
         return run_strain(
             "--build-dir",
             str(self.build_dir),
@@ -308,7 +308,28 @@ class EndToEndTest(unittest.TestCase):
             "lexer",
             "--strategy",
             "per-mutant",
+            *argv,
         )
+
+    def test_cost_order_checks_the_same_mutants_as_source_order_with_the_same_results_cheapest_first(self) -> None:
+        configure_project(self.root, self.build_dir)
+        runs: dict[str, list[dict[str, object]]] = {}
+        for order in ("source", "cost"):
+            with self.subTest(order=order):
+                exit_code, stdout, _ = self.run_per_mutant("--order", order)
+                self.assertEqual(exit_code, 0, stdout)
+                self.assertRegex(stdout, r"id [0-9a-f]+  ETA \d+s\n")
+                runs[order] = self.mutant_events()
+                # The same results; which test kills add varies with the baselines, in either order.
+                self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+        checked = {order: sorted({event["id"] for event in events}) for order, events in runs.items()}
+        self.assertEqual(checked["cost"], checked["source"])
+        self.assertEqual([event["line"] for event in runs["source"]][0], 3)
+        # Both tests cover add, the other mutants only sample_tests, so the mutant of add costs the most.
+        self.assertEqual([event["line"] for event in runs["cost"]][-1], 3)
+        # Every result carries the estimated seconds left; none are left after the last mutant.
+        self.assertTrue(all(isinstance(event["eta"], float) for event in runs["cost"]), runs["cost"])
+        self.assertEqual(runs["cost"][-1]["eta"], 0.0)
 
     def test_per_mutant_strategy_builds_each_mutant_once_and_stops_at_the_first_kill(self) -> None:
         (self.root / "tests" / "other_tests.cpp").write_text(OTHER_TESTS_CHECKING_ADD)
@@ -319,7 +340,8 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(exit_code, 0, stdout)
         self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
         self.assertIn("· src/sample.cpp: 8 mutants on 6 lines", stdout)
-        self.assertIn("[1/8] killed", stdout)
+        # Both tests cover add, so its mutant costs the most and runs last.
+        self.assertIn("[8/8] killed", stdout)
         # Either test may be the one that kills add, so the per-test lines vary; the combined score doesn't.
         self.assertIn("src/sample.cpp   40.0%   8 mutants  2 detected  3 survived", stdout)
         self.assertIn("✓ sources restored and rebuilt", stdout)

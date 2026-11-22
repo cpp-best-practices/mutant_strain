@@ -1187,6 +1187,9 @@ class TuiConsole(Console):
     def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
         self.live.record_result(result, source, line)
 
+    def eta_estimated(self, seconds: float | None) -> None:
+        self.live.set_estimate(seconds)
+
     def safety_nets_checked(self, relaxed: Sequence[RelaxedSafetyNet], holding: Sequence[SafetyNet]) -> None:
         self.live.set_safety_nets(relaxed, holding)
 

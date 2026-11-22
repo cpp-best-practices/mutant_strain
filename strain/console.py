@@ -150,6 +150,9 @@ class Console:
     def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
         pass
 
+    def eta_estimated(self, seconds: float | None) -> None:
+        """The seconds the mutants still planned will take, estimated from their cost; the lines show it already."""
+
     def build_started(self, command: str) -> None:
         pass
 
