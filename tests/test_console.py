@@ -114,7 +114,7 @@ class CreateConsoleTest(unittest.TestCase):
         with mock.patch("importlib.util.find_spec", return_value=None):
             console = create_console(TerminalBuffer(), err, UiMode.LIVE)
         self.assertIs(type(console), Console)
-        self.assertIn("--ui live needs Textual: pip install 'mutant-strain[ui]'", err.getvalue())
+        self.assertIn("--ui live needs Textual: pip install 'mutant_strain[ui]'", err.getvalue())
 
     @unittest.skipUnless(importlib.util.find_spec("textual"), "the TUI needs Textual")
     def test_live_mode_on_a_terminal_uses_the_tui(self) -> None:

@@ -603,7 +603,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn(reason, stdout)
         self.assertEqual(
             (self.report_dir / "summary.md").read_text(),
-            f"## strain mutation testing\n\n**Nothing was mutation tested.** {reason}\n",
+            f"## mutant_strain mutation testing\n\n**Nothing was mutation tested.** {reason}\n",
         )
 
     def test_since_with_only_unexecuted_changes_says_nothing_was_tested(self) -> None:
@@ -622,6 +622,7 @@ class EndToEndTest(unittest.TestCase):
             "the selected tests don't execute them, or they hold nothing to mutate.",
             (self.report_dir / "summary.md").read_text(),
         )
+
     def test_survivors_of_weak_tests_group_into_the_patterns_that_name_the_missing_tests(self) -> None:
         (self.root / "include" / "sample.hpp").write_text(RECOGNISER_HEADER)
         (self.root / "src" / "sample.cpp").write_text(RECOGNISER_SOURCE)
