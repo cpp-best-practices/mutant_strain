@@ -132,6 +132,19 @@ For each selected test:
 
 Interrupted runs continue with `--resume`.
 
+With `--strategy per-mutant`, strain baselines every test first, then builds each mutant once and runs its covering
+tests, fastest first, until one detects it. Mutants with the cheapest covering tests go first (`--order cost`, the
+default), so most results arrive early and an interrupted run has covered the most ground. `--order source` keeps the
+order of files and offsets instead.
+
+### Time left
+
+Each progress line ends with an estimate of the time left, such as `· ETA 2h10m`. strain also writes it to
+`events.jsonl` as a `progress` event, and the live TUI's header counts it down. A mutant costs a rebuild of its file
+plus its covering tests' baseline durations. The estimate learns each file's rebuild time, and what fraction of those
+durations the tests really take, since a kill stops them early. It covers the whole run with `per-mutant`, and the
+current test with `per-test`, where later tests' mutants aren't known yet.
+
 ### Build cache
 
 A mutant that doesn't compile is a `compile_error` for every test, so strain builds it only once:
@@ -147,6 +160,7 @@ A mutant that doesn't compile is a `compile_error` for every test, so strain bui
 | `killed` | A test failed | Yes |
 | `killed_by_sanitizer` | ASan or UBSan caught it, the assertions didn't | Yes, flagged |
 | `killed_by_resource_limit` | The test reached its [memory limit](#memory-limit) | Yes |
+| `killed_at_compile_time` | A `static_assert` or a constant evaluation failed with it in place | Yes |
 | `timeout` | Ran too long | Yes |
 | `survived` | All tests passed | Yes |
 | `skipped_unevaluated` | Operand never evaluated by this test | No |
@@ -155,7 +169,25 @@ A mutant that doesn't compile is a `compile_error` for every test, so strain bui
 
 Survivors are labeled `not_reached` (needs a new test input) or `not_detected` (needs a stronger assertion) when branch coverage is available.
 
-Mutation score = (killed + killed_by_sanitizer + killed_by_resource_limit + timeout) ÷ (those + survived)
+Mutation score = (killed + killed_by_sanitizer + killed_by_resource_limit + killed_at_compile_time + timeout) ÷
+(those + survived)
+
+### Compile-time code
+
+gcov counts what runs, so a `constexpr` or `consteval` function checked only by `static_assert` has no executed lines.
+strain would never mutate it, and a header used only that way doesn't appear in the coverage data at all. strain finds
+these functions in the sources instead:
+
+- **By default:** the lines of `constexpr` and `consteval` functions that hold mutants but that no test runs are listed
+  under **Not mutated: evaluated at compile time only**. That covers the console, `summary.md`, `index.html` and
+  `compileTimeOnly` in `report.json`. You can tell "well tested" from "never looked at".
+- **With `--compile-time`:** after the tests, strain mutates those lines and builds everything with each mutant.
+  - A failed `static_assert` or constant evaluation kills it as `killed_at_compile_time`. Its detail names the failed
+    check.
+  - A mutant that builds survives, with a hint to add a `static_assert`.
+  - Invalid code stays `compile_error`.
+- **Any mutant:** a build or `-fsyntax-only` check that fails on a compile-time check counts as `killed_at_compile_time`,
+  even on lines the tests run. The [build cache](#build-cache) remembers it like any other build failure.
 
 ### Memory limit
 
@@ -199,6 +231,7 @@ strain run --safety-nets=warn
 | `-R` / `-E` | | Include / exclude tests by regex, as in ctest |
 | `--since <ref>` | | Mutate only lines changed since a git ref |
 | `--strategy` | `per-test` | `per-test`, or `per-mutant`: build each mutant once and run its covering tests, fastest first, until one detects it |
+| `--order` | `cost` | With `per-mutant`: `cost` (cheapest covering tests first) or `source` (by file and offset) |
 | `--skip-killed` | off | Skip mutants an earlier test already killed |
 | `--no-build-cache` | off | Don't reuse or save the [build cache](#build-cache) |
 | `--engine` | `auto` | `cppcheck`, `tree-sitter`, `lexer` |
@@ -208,6 +241,7 @@ strain run --safety-nets=warn
 | `--threshold` | | Exit non-zero below this score |
 | `--strict` | off | Abort if any test is excluded |
 | `--max-per-line` | | Cap mutants per source line |
+| `--compile-time` | off | Also mutate `constexpr` code no test runs; see [Compile-time code](#compile-time-code) |
 | `--memory-limit` | 4× the baseline, at least 512 MB | Memory each test may use with a mutant in place, in MB; `0` for no limit. See [Memory limit](#memory-limit) |
 | `--resume` | | Continue an interrupted run |
 | `--all` | off | Show every survivor, not just the top actions |

@@ -4,6 +4,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from html import escape
 
 from .console import HIGH_SCORE, LOW_SCORE
+from .compile_time import NOT_MUTATED_HEADING, NOT_MUTATED_HINT, NotMutated
 from .report import TAB_WIDTH, FileScore, file_scores, format_score, hint
 from .results import DETECTED_STATES, CombinedResult, MutantState, mutation_score
 
@@ -145,7 +146,22 @@ def _counts(combined: Sequence[CombinedResult]) -> str:
     return ", ".join(f"{escape(state)} {states.count(state)}" for state in MutantState if state in states)
 
 
-def html_report(combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> str:
+def _not_mutated_list(not_mutated: Sequence[NotMutated]) -> list[str]:
+    if not not_mutated:
+        return []
+    items = (f"<li>{escape(entry.summary())}</li>" for entry in not_mutated)
+    return [
+        f"<h2>{NOT_MUTATED_HEADING}</h2>",
+        f"<p>{escape(NOT_MUTATED_HINT.capitalize())}.</p>",
+        "<ul>",
+        *items,
+        "</ul>",
+    ]
+
+
+def html_report(
+    combined: Sequence[CombinedResult], sources: Mapping[str, str], not_mutated: Sequence[NotMutated] = ()
+) -> str:
     score = mutation_score(entry.state for entry in combined)
     body = (
         [
@@ -156,7 +172,7 @@ def html_report(combined: Sequence[CombinedResult], sources: Mapping[str, str]) 
         ]
         if combined
         else ["<p>No mutants were generated.</p>"]
-    )
+    ) + _not_mutated_list(not_mutated)
     page = [
         "<!DOCTYPE html>",
         '<html lang="en"><head><meta charset="utf-8">',

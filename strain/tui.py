@@ -66,6 +66,7 @@ STATE_GLYPHS = {
     MutantState.KILLED: "✔",
     MutantState.KILLED_BY_SANITIZER: "✔",
     MutantState.KILLED_BY_RESOURCE_LIMIT: "✔",
+    MutantState.KILLED_AT_COMPILE_TIME: "✔",
     MutantState.TIMEOUT: "✔",
     MutantState.SURVIVED: "✗",
     MutantState.SKIPPED_UNEVALUATED: "·",
@@ -78,6 +79,7 @@ STATE_STYLES = {
     MutantState.KILLED: "green",
     MutantState.KILLED_BY_SANITIZER: "green",
     MutantState.KILLED_BY_RESOURCE_LIMIT: "green",
+    MutantState.KILLED_AT_COMPILE_TIME: "green",
     MutantState.TIMEOUT: "green",
     MutantState.SURVIVED: "bold red",
     MutantState.SKIPPED_UNEVALUATED: "dim",
@@ -90,6 +92,7 @@ STATE_STYLES = {
 SHORT_STATES = {
     MutantState.KILLED_BY_SANITIZER: "sanitizer",
     MutantState.KILLED_BY_RESOURCE_LIMIT: "memory",
+    MutantState.KILLED_AT_COMPILE_TIME: "constexpr",
     MutantState.COMPILE_ERROR: "no build",
     MutantState.SKIPPED_UNEVALUATED: "skipped",
 }
@@ -365,7 +368,8 @@ def run_scores(state: LiveState) -> Text:
     for kind, count in state.counts().items():
         scores.append("   ")
         scores.append_text(state_text(kind, glyph_only=True))
-        scores.append(f" {kind} {count}", style=STATE_STYLES[kind])
+        # The short labels, so the totals fit beside the timing even with every kind of kill.
+        scores.append(f" {SHORT_STATES.get(kind, kind)} {count}", style=STATE_STYLES[kind])
     return scores
 
 
@@ -746,7 +750,7 @@ class StrainApp(App[None]):
         for state, count in counts.items():
             tab_id = f"filter-{state}"
             existing = filters.query(f"#{tab_id}")
-            label = f"{state} {count}"
+            label = f"{SHORT_STATES.get(state, state)} {count}"
             if existing:
                 existing.first(Tab).label = label
             else:
@@ -1188,6 +1192,9 @@ class TuiConsole(Console):
 
     def mutant_finished(self, index: int, state: str) -> None:
         self.live.finish_mutant(index, state)
+
+    def progress_estimated(self, remaining_seconds: float | None) -> None:
+        self.live.set_estimate(remaining_seconds)
 
     def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
         self.live.record_result(result, source, line)

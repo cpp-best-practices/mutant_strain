@@ -6,7 +6,7 @@ from pathlib import Path
 from strain.cli import build_parser, options_from_arguments
 from strain.console import UiMode
 from strain.mutators import Engine
-from strain.runner import Strategy
+from strain.runner import Order, Strategy
 from strain.safety_nets import Level
 
 
@@ -41,6 +41,7 @@ EVERY_OPTION = (
     "3",
     "--memory-limit",
     "2048",
+    "--compile-time",
     "--resume",
     "--all",
     "--report-dir",
@@ -57,12 +58,14 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.since, None)
         self.assertFalse(options.skip_killed)
         self.assertIs(options.strategy, Strategy.PER_TEST)
+        self.assertIs(options.order, Order.COST)
         self.assertTrue(options.build_cache)
         self.assertIsNone(options.safety_nets)
         self.assertIsNone(options.threshold)
         self.assertFalse(options.strict)
         self.assertIsNone(options.max_per_line)
         self.assertIsNone(options.memory_limit)
+        self.assertFalse(options.compile_time)
         self.assertFalse(options.resume)
         self.assertFalse(options.show_all)
         self.assertIs(options.engine, Engine.AUTO)
@@ -81,6 +84,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertTrue(options.strict)
         self.assertEqual(options.max_per_line, 3)
         self.assertEqual(options.memory_limit, 2048)
+        self.assertTrue(options.compile_time)
         self.assertTrue(options.resume)
         self.assertTrue(options.show_all)
         self.assertEqual(options.report_dir, Path("out"))
@@ -92,6 +96,11 @@ class RunOptionsTest(unittest.TestCase):
         for engine in Engine:
             with self.subTest(engine=engine):
                 self.assertIs(parse("--engine", str(engine)).engine, engine)
+
+    def test_every_order(self) -> None:
+        for order in Order:
+            with self.subTest(order=order):
+                self.assertIs(parse("--order", str(order)).order, order)
 
     def test_no_build_cache(self) -> None:
         self.assertFalse(parse("--no-build-cache").build_cache)
