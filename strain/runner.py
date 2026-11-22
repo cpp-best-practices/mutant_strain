@@ -27,7 +27,7 @@ from .build import (
 )
 from .build_cache import BuildFailureCache, cache_path
 from .config import CONFIG_FILE, Config, load_config
-from .console import BOLD, DIM, RED, STATE_STYLES, UiMode, create_console, plural, score_style
+from .console import BOLD, DIM, RED, STATE_STYLES, YELLOW, UiMode, create_console, plural, score_style
 from .coverage import FileCoverage, GcovCoverage
 from .estimate import BuildTimes, Eta, Order, format_eta
 from .journal import Journal
@@ -46,6 +46,7 @@ from .operator_sites import EngineError, OperatorSite
 from .html_report import html_report
 from .patterns import pattern_lines
 from .report import (
+    NO_MUTANTS,
     EventLog,
     FileScore,
     action_items,
@@ -656,8 +657,23 @@ class Runner:
         (report_dir / "report.json").write_text(
             json.dumps(mutation_testing_elements(combined, sources), indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        (report_dir / "index.html").write_text(html_report(combined, sources), encoding="utf-8")
-        (report_dir / "summary.md").write_text(markdown_summary(combined, self.options.threshold), encoding="utf-8")
+        no_mutants = self.why_no_mutants()
+        (report_dir / "index.html").write_text(html_report(combined, sources, no_mutants), encoding="utf-8")
+        (report_dir / "summary.md").write_text(
+            markdown_summary(combined, self.options.threshold, no_mutants), encoding="utf-8"
+        )
+
+    def why_no_mutants(self) -> str:
+        """Why a run may have no mutants; with --since, an empty run passes, so it must say why."""
+        if self.since is None:
+            return NO_MUTANTS
+        changed = sum(len(lines) for lines in self.since.values())
+        if changed == 0:
+            return f"No source line changed since {self.options.since}, so there was nothing to mutate."
+        return (
+            f"No mutant was generated on the {plural(changed, 'line')} changed since {self.options.since}: "
+            "the selected tests don't execute them, or they hold nothing to mutate."
+        )
 
     def show_survivors(self, combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> None:
         survivors = [entry for entry in combined if entry.state is MutantState.SURVIVED]
@@ -713,6 +729,8 @@ class Runner:
             if state in states
         ]
         console.field("mutants", f"{len(combined)}   {'  '.join(counts)}" if counts else "none", 8)
+        if not combined:
+            console.line(f"  {console.paint(self.why_no_mutants(), BOLD + YELLOW)}")
         percent = None if score is None else score * 100
         console.line(
             f"  {console.paint('mutation score', BOLD)} {console.score(percent)}{self.threshold_note(percent)}"

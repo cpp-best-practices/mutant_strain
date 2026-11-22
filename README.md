@@ -231,10 +231,77 @@ To suppress mutants in source, add `// mutate-off` to the line.
 
 Written to `strain-report/` <!-- TODO(claude): confirm path -->:
 
+- `index.html`: a browsable report, with each source annotated
+- `summary.md`: the score, the files and the survivors, for a CI job summary or a pull request comment
 - `report.json`: full results, in the mutation-testing-elements schema, plus a `patterns` array: each group of
   survivors with its kind, file, advice and mutant IDs, and the hotspots with `"primary": false`
 - `events.jsonl`: every event of the run
 - compiler-style warnings on the console (`file:line:col: warning: survived [ror]`), clickable in editors
+
+## CI
+
+strain's exit status is what a CI job should fail on:
+
+- **Non-zero when nothing was tested:** without `--since`, strain exits non-zero when no mutant was generated, because
+  a run that mutated nothing tested nothing.
+- **Non-zero below `--threshold`.**
+- **`--since` with nothing to mutate passes:** a change that touches no line the tests run has nothing to test. The
+  summary then starts with **Nothing was mutation tested** and gives the reason, so the result can't be mistaken for a
+  clean one.
+
+**Pipes hide the exit status unless the step says `shell: bash`.** Without a `shell:` key, GitHub Actions runs
+`bash -e`, without `pipefail`, so `strain run … | tee strain.log` returns the status of `tee` and the step passes
+whatever strain found. With `shell: bash`, GitHub adds `-o pipefail`.
+
+This job tests the lines a pull request changes, puts the summary on the run's page and keeps the full report:
+
+```yaml
+name: Mutation testing
+on: pull_request
+
+jobs:
+  strain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # --since needs the base branch
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build cppcheck
+          pip install "git+https://github.com/cpp-best-practices/mutant_strain"
+      - name: Configure a build for strain
+        run: |
+          cmake -S . -B build-strain -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_CXX_FLAGS="--coverage -fsanitize=address,undefined -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS -ftrivial-auto-var-init=pattern" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage -fsanitize=address,undefined"
+          cmake --build build-strain
+      - name: Mutation test
+        shell: bash # adds -o pipefail, so the step fails when strain does, even through tee
+        run: |
+          strain run --build-dir build-strain --ui log --since "origin/${{ github.base_ref }}" --threshold 80 \
+            | tee strain.log
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f strain-report/summary.md ]; then cat strain-report/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strain-report
+          path: |
+            strain-report/
+            strain.log
+```
+
+To test everything instead, on a schedule or on pushes to `main`, drop `--since`: the job then also fails when no
+mutant was generated.
 
 ## Pluggable backends
 

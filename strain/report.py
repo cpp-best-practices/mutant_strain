@@ -208,11 +208,17 @@ def _markdown_survivors(combined: Sequence[CombinedResult]) -> list[str]:
     ]
 
 
-def markdown_summary(combined: Sequence[CombinedResult], threshold: float | None) -> str:
-    """A summary for CI pages such as `$GITHUB_STEP_SUMMARY` or a pull request comment."""
+NO_MUTANTS = "No mutants were generated."
+
+
+def markdown_summary(combined: Sequence[CombinedResult], threshold: float | None, no_mutants: str = NO_MUTANTS) -> str:
+    """A summary for CI pages such as `$GITHUB_STEP_SUMMARY` or a pull request comment.
+
+    `no_mutants` says why there is nothing to show, so an empty run doesn't read like a clean one.
+    """
     heading = [f"## {NAME} mutation testing", ""]
     if not combined:
-        return "\n".join([*heading, "No mutants were generated."]) + "\n"
+        return "\n".join([*heading, f"**Nothing was mutation tested.** {no_mutants}"]) + "\n"
     score = mutation_score(entry.state for entry in combined)
     lines = [
         *heading,
