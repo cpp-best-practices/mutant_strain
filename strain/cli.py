@@ -10,6 +10,7 @@ from types import FrameType
 
 from . import NAME
 from .console import BOLD, RED, YELLOW, UiMode, paint, wants_color
+from .estimate import Order
 from .mutators import Engine
 from .runner import RunOptions, StrainError, Strategy, run
 from .safety_nets import Level
@@ -35,6 +36,13 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
         help="per-test (rebuild each mutant for each test) or per-mutant (build each mutant once, run until killed)",
     )
     parser.add_argument("--skip-killed", action="store_true", help="skip mutants an earlier test already killed")
+    parser.add_argument(
+        "--order",
+        type=Order,
+        choices=list(Order),
+        default=Order.COST,
+        help="cost (the mutants with the cheapest tests and builds first) or source (by file and offset)",
+    )
     parser.add_argument(
         "--no-build-cache",
         dest="build_cache",
@@ -101,6 +109,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         since=arguments.since,
         skip_killed=arguments.skip_killed,
         strategy=arguments.strategy,
+        order=arguments.order,
         build_cache=arguments.build_cache,
         engine=arguments.engine,
         safety_nets=arguments.safety_nets,

@@ -133,6 +133,9 @@ class LiveState:
         self.queue: list[QueueEntry] = []
         self.current: int | None = None
         self.mutant_started_at: float | None = None
+        # The runner's estimate of the seconds the queue will take, from the cost of each mutant, and when it came.
+        self.estimate: float | None = None
+        self.estimated_at = 0.0
         self.results: list[MutantResult] = []
         self.contexts: dict[str, MutantContext] = {}
         self.sources: dict[str, str] = {}
@@ -166,6 +169,7 @@ class LiveState:
     def _set_queue(self, queue: list[QueueEntry]) -> None:
         self.queue = queue
         self.current = None
+        self.estimate = None
         self.plan_version += 1
         self._changed()
 
@@ -185,6 +189,12 @@ class LiveState:
                 entry.duration = self.clock() - self.mutant_started_at
                 self.durations[entry.mutant.id] = self.durations.get(entry.mutant.id, 0.0) + entry.duration
                 self.mutant_started_at = None
+            self._changed()
+
+    def set_estimate(self, seconds: float | None) -> None:
+        with self.lock:
+            self.estimate = seconds
+            self.estimated_at = self.clock()
             self._changed()
 
     def record_result(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
@@ -326,11 +336,13 @@ class LiveState:
         return sum(timed) / len(timed) if timed else None
 
     def remaining_seconds(self) -> float | None:
-        """How long the queue of the current test will take, from the average time per mutant so far."""
-        mean = self.mean_duration()
-        if mean is None or self.done:
+        """How long the queue will take: the runner's estimate counted down, or else the average time per mutant."""
+        if self.done:
             return None
-        return mean * (len(self.queue) - self.done_count())
+        if self.estimate is not None:
+            return max(0.0, self.estimate - (self.clock() - self.estimated_at))
+        mean = self.mean_duration()
+        return None if mean is None else mean * (len(self.queue) - self.done_count())
 
     def phase(self) -> str:
         return status_phase(self.status)
