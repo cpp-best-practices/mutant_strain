@@ -44,6 +44,11 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
         help="cost (the mutants with the cheapest tests and builds first) or source (by file and offset)",
     )
     parser.add_argument(
+        "--compile-time",
+        action="store_true",
+        help="also mutate constexpr and consteval code no test executes; a failed static_assert kills the mutant",
+    )
+    parser.add_argument(
         "--no-build-cache",
         dest="build_cache",
         action="store_false",
@@ -111,6 +116,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         strategy=arguments.strategy,
         order=arguments.order,
         build_cache=arguments.build_cache,
+        compile_time=arguments.compile_time,
         engine=arguments.engine,
         safety_nets=arguments.safety_nets,
         threshold=arguments.threshold,

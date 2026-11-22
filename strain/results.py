@@ -16,6 +16,7 @@ SANITIZER_REPORT = re.compile(
 class MutantState(enum.StrEnum):
     KILLED = "killed"
     KILLED_BY_SANITIZER = "killed_by_sanitizer"
+    KILLED_AT_COMPILE_TIME = "killed_at_compile_time"
     TIMEOUT = "timeout"
     SURVIVED = "survived"
     SKIPPED_UNEVALUATED = "skipped_unevaluated"
@@ -28,7 +29,9 @@ class SurvivorKind(enum.StrEnum):
     NOT_DETECTED = "not_detected"
 
 
-DETECTED_STATES = frozenset({MutantState.KILLED, MutantState.KILLED_BY_SANITIZER, MutantState.TIMEOUT})
+DETECTED_STATES = frozenset(
+    {MutantState.KILLED, MutantState.KILLED_BY_SANITIZER, MutantState.KILLED_AT_COMPILE_TIME, MutantState.TIMEOUT}
+)
 SCORED_STATES = DETECTED_STATES | {MutantState.SURVIVED}
 
 # Lower index wins when one mutant has different results under different tests.

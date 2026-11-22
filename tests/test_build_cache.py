@@ -45,6 +45,16 @@ class BuildFailureCacheTest(unittest.TestCase):
         self.assertIsNone(reloaded.failure(SAME_ID_ELSEWHERE))
         self.assertEqual(len(reloaded), 1)
 
+    def test_mutants_killed_at_compile_time_survive_a_reload_apart_from_build_failures(self) -> None:
+        BuildFailureCache.load(self.path).add_compile_time_kill(BROKEN, "static assertion failed")
+
+        reloaded = BuildFailureCache.load(self.path)
+
+        self.assertEqual(reloaded.compile_time_kill(BROKEN), "static assertion failed")
+        self.assertIsNone(reloaded.failure(BROKEN))
+        self.assertIsNone(reloaded.compile_time_kill(SAME_ID_ELSEWHERE))
+        self.assertEqual(len(reloaded), 1)
+
     def test_an_in_memory_cache_writes_nothing(self) -> None:
         cache = BuildFailureCache()
         cache.add(BROKEN, "build failed")

@@ -45,9 +45,12 @@ class CompileCommand:
     def has_source_based_coverage(self) -> bool:
         return any(argument in SOURCE_BASED_COVERAGE_FLAGS for argument in self.arguments)
 
-    def passes_syntax_check(self) -> bool:
-        completed = subprocess.run(self.syntax_only_arguments(), cwd=self.directory, capture_output=True)
-        return completed.returncode == 0
+    def syntax_errors(self) -> str | None:
+        """The compiler's diagnostics when `-fsyntax-only` rejects the source, or None when it passes."""
+        completed = subprocess.run(
+            self.syntax_only_arguments(), cwd=self.directory, capture_output=True, text=True, errors="replace"
+        )
+        return None if completed.returncode == 0 else completed.stdout + completed.stderr
 
 
 def _command_from_entry(entry: Mapping[str, Any]) -> CompileCommand:

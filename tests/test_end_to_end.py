@@ -111,6 +111,23 @@ RECOGNISER_TEST = """#include "sample.hpp"
 int main() { return is_identifier_start('m') && is_identifier_start('M') && is_identifier_start('_') ? 0 : 1; }
 """
 OTHER_TESTS_CHECKING_ADD = '#include "sample.hpp"\n\nint main() { return add(1, 1) == 2 ? 0 : 1; }\n'
+# square is checked only by a static_assert, so no test executes it; first_of's `*` mutated to `/` is invalid code.
+COMPILE_TIME_HEADER = "[[nodiscard]] int add(int lhs, int rhs);\n"
+COMPILE_TIME_SOURCE = """#include "sample.hpp"
+
+int add(int lhs, int rhs) { return lhs + rhs; }
+
+using Value = int;
+
+constexpr int square(int value) { return value * value; }
+
+constexpr int first_of(const Value *values) { return values[0]; }
+
+constexpr Value table[] = { 4, 5 };
+static_assert(square(3) == 9);
+static_assert(first_of(table) == 4);
+"""
+COMPILE_TIME_TEST = '#include "sample.hpp"\n\nint main() { return add(2, 3) == 5 ? 0 : 1; }\n'
 
 
 def run_strain(*argv: str) -> tuple[int, str, str]:
@@ -635,6 +652,54 @@ class EndToEndTest(unittest.TestCase):
         ids = [mutant for pattern in primary for mutant in pattern["mutants"]]
         self.assertEqual(len(ids), len(set(ids)))
         self.assertIn("<h2>Patterns</h2>", (self.report_dir / "index.html").read_text())
+
+    def use_code_evaluated_only_at_compile_time(self) -> None:
+        (self.root / "include" / "sample.hpp").write_text(COMPILE_TIME_HEADER)
+        (self.root / "src" / "sample.cpp").write_text(COMPILE_TIME_SOURCE)
+        (self.root / "tests" / "sample_tests.cpp").write_text(COMPILE_TIME_TEST)
+        (self.root / "tests" / "other_tests.cpp").write_text("int main() { return 0; }\n")
+        configure_project(self.root, self.build_dir)
+
+    def test_lines_evaluated_only_at_compile_time_are_reported_as_not_mutated(self) -> None:
+        self.use_code_evaluated_only_at_compile_time()
+
+        exit_code, stdout, _ = self.run_sample_tests("lexer")
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertEqual(self.mutant_states(), [(3, "aor", "-", "killed")])
+        self.assertIn("src/sample.cpp:7: not mutated: evaluated at compile time only", stdout)
+        self.assertIn("src/sample.cpp:9: not mutated: evaluated at compile time only", stdout)
+        self.assertNotIn("src/sample.cpp:13: not mutated", stdout)
+        self.assertIn("2 lines not mutated: evaluated at compile time only; mutate them with --compile-time", stdout)
+        self.assertIn(
+            "2 lines not mutated: evaluated at compile time only", (self.report_dir / "summary.md").read_text()
+        )
+
+    def test_compile_time_mutants_failing_a_static_assert_are_killed_at_compile_time(self) -> None:
+        self.use_code_evaluated_only_at_compile_time()
+
+        for strategy in ("per-test", "per-mutant"):
+            with self.subTest(strategy=strategy):
+                exit_code, stdout, _ = run_strain(
+                    *("--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir)),
+                    *("-R", "^sample_tests$", "--engine", "lexer", "--compile-time", "--strategy", strategy),
+                )
+
+                self.assertEqual(exit_code, 0, stdout)
+                self.assertEqual(
+                    self.mutant_states(),
+                    [
+                        (3, "aor", "-", "killed"),
+                        (7, "aor", "/", "killed_at_compile_time"),
+                        (9, "aor", "/", "compile_error"),
+                    ],
+                )
+                self.assertIn("mutation score 100.0%", stdout)
+                self.assertNotIn("not mutated: evaluated at compile time only", stdout)
+                self.assertEqual((self.root / "src" / "sample.cpp").read_text(), COMPILE_TIME_SOURCE)
+        # The second run knows both outcomes from the build cache.
+        self.assertIn("static assertion failed, known from the cache", stdout)
+        self.assertIn("rejected by -fsyntax-only, known from the cache", stdout)
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)
