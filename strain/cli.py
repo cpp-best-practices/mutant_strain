@@ -28,6 +28,9 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-R", dest="include", metavar="REGEX", help="include tests by regex, as in ctest")
     parser.add_argument("-E", dest="exclude", metavar="REGEX", help="exclude tests by regex, as in ctest")
     parser.add_argument("--since", metavar="REF", help="mutate only lines changed since a git ref")
+
+
+def _add_scheduling_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--strategy",
         type=Strategy,
@@ -94,6 +97,7 @@ def _add_report_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     _add_selection_arguments(parser)
+    _add_scheduling_arguments(parser)
     _add_backend_arguments(parser)
     _add_policy_arguments(parser)
     _add_report_arguments(parser)

@@ -39,33 +39,44 @@ def _is_initializer_brace(tokens: Sequence[Token], position: int, in_initializer
     return in_initializers and tokens[position - 1].kind is TokenKind.IDENTIFIER
 
 
+def _opens_group(tokens: Sequence[Token], position: int, depth: int, in_initializers: bool) -> bool:
+    """A `(` or `[`, or a `{` nested in one or initialising a member: none of them opens the function's body."""
+    text = tokens[position].text
+    return text in OPENING_GROUPS or (
+        text == "{" and (depth > 0 or _is_initializer_brace(tokens, position, in_initializers))
+    )
+
+
+def _closes_group(text: str, depth: int) -> bool:
+    return text in CLOSING_GROUPS or (text == "}" and depth > 0)
+
+
+def _ends_declaration(tokens: Sequence[Token], position: int) -> bool:
+    """A `;` or an initialising `=`, so the specifier declared a variable or a function without a body."""
+    text = tokens[position].text
+    return text == ";" or (text == "=" and tokens[position - 1].text != "operator")
+
+
 def _body_start(tokens: Sequence[Token], specifier: int) -> int | None:
     """The `{` opening the body of the function `tokens[specifier]` declares; None for a variable or a declaration."""
     depth = 0
     seen_parameters = False
     in_initializers = False
-    position = specifier + 1
-    while position < len(tokens):
+    for position in range(specifier + 1, len(tokens)):
         text = tokens[position].text
-        if text in OPENING_GROUPS:
+        if _opens_group(tokens, position, depth, in_initializers):
             depth += 1
             seen_parameters = seen_parameters or text == "("
-        elif text in CLOSING_GROUPS:
+        elif _closes_group(text, depth):
             depth -= 1
         elif depth > 0:
-            pass
-        elif text == ";" or (text == "=" and tokens[position - 1].text != "operator"):
+            continue
+        elif _ends_declaration(tokens, position):
             return None
         elif text == ":" and seen_parameters:
             in_initializers = True
-        elif text == "{" and _is_initializer_brace(tokens, position, in_initializers):
-            closing = _closing_brace(tokens, position)
-            if closing is None:
-                return None
-            position = closing
         elif text == "{":
             return position if seen_parameters else None
-        position += 1
     return None
 
 

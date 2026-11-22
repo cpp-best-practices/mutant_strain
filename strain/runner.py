@@ -614,13 +614,7 @@ class Runner:
         if duration is None:
             return []
         timeout = mutant_timeout(duration)
-        coverage = self.coverage.collect()
-        self.verify_coverage_data(test, coverage)
-        planned = order_planned(
-            self.plan_mutants(self.source_files(coverage, self.test_code(test))), self.options.order, self.build_times
-        )
-        self.console.plan([entry.mutant for entry in planned])
-        self.start_estimate([duration] * len(planned), [entry.mutant.file for entry in planned])
+        planned = self.plan_test(test, duration)
         width = len(str(len(planned)))
         results: list[MutantResult] = []
         for number, entry in enumerate(planned, start=1):
@@ -643,6 +637,16 @@ class Runner:
             self.console.mutant_finished(number - 1, outcome.state)
         self.rebuild_if_mutated()
         return results
+
+    def plan_test(self, test: str, duration: float) -> list[PlannedMutant]:
+        coverage = self.coverage.collect()
+        self.verify_coverage_data(test, coverage)
+        planned = order_planned(
+            self.plan_mutants(self.source_files(coverage, self.test_code(test))), self.options.order, self.build_times
+        )
+        self.console.plan([entry.mutant for entry in planned])
+        self.start_estimate([duration] * len(planned), [entry.mutant.file for entry in planned])
+        return planned
 
     def verify_coverage_data(self, test: str, coverage: dict[Path, FileCoverage]) -> None:
         if self.coverage_verified:
