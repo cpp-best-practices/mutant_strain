@@ -168,7 +168,7 @@ def create_console(out: TextIO, err: TextIO, mode: UiMode) -> Console:
         return Console(out, err, mode)
     if importlib.util.find_spec("textual") is None:
         console = Console(out, err, UiMode.AUTO)
-        console.warn("--ui live needs Textual: pip install 'strain[ui]'; showing plain output instead")
+        console.warn("--ui live needs Textual: pip install 'mutant-strain[ui]'; showing plain output instead")
         return console
     from .tui import TuiConsole
 
