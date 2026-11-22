@@ -21,6 +21,7 @@ from .results import (
 MUTATION_TESTING_ELEMENTS_STATUS = {
     MutantState.KILLED: "Killed",
     MutantState.KILLED_BY_SANITIZER: "Killed",
+    MutantState.KILLED_BY_RESOURCE_LIMIT: "Killed",
     MutantState.TIMEOUT: "Timeout",
     MutantState.SURVIVED: "Survived",
     MutantState.SKIPPED_UNEVALUATED: "Ignored",
@@ -38,10 +39,13 @@ def format_score(score: float | None) -> str:
 
 def summary_line(test: str, results: Sequence[MutantResult], width: int) -> str:
     states = [result.state for result in results]
+    # Rare enough to show only when it happens.
+    memory = states.count(MutantState.KILLED_BY_RESOURCE_LIMIT)
     return (
         f"{test:<{width}}   score {format_score(mutation_score(states))}"
         f"   killed {states.count(MutantState.KILLED)}"
         f"  sanitizer {states.count(MutantState.KILLED_BY_SANITIZER)}"
+        f"{f'  memory {memory}' if memory else ''}"
         f"  timeout {states.count(MutantState.TIMEOUT)}"
         f"  survived {states.count(MutantState.SURVIVED)}"
     )

@@ -62,7 +62,7 @@ class ConsoleTest(unittest.TestCase):
         console.step("working tree is clean")
         console.status("building…")
         console.line(f"{console.state(MutantState.SURVIVED)}|")
-        self.assertEqual(out.getvalue(), "\n▸ Preparing\n  ✓ working tree is clean\nsurvived           |\n")
+        self.assertEqual(out.getvalue(), "\n▸ Preparing\n  ✓ working tree is clean\nsurvived                |\n")
 
     def test_live_status_is_cleared_before_the_next_line(self) -> None:
         out = TerminalBuffer()

@@ -11,11 +11,14 @@ from .mutators import Mutant
 SANITIZER_REPORT = re.compile(
     r"ERROR: (?:Address|Leak|Memory|Thread)Sanitizer|runtime error: |SUMMARY: UndefinedBehaviorSanitizer"
 )
+# AddressSanitizer stopping at hard_rss_limit_mb, or C++ running out under a data segment limit.
+MEMORY_EXHAUSTED = re.compile(r"AddressSanitizer: hard rss limit exhausted|std::bad_alloc")
 
 
 class MutantState(enum.StrEnum):
     KILLED = "killed"
     KILLED_BY_SANITIZER = "killed_by_sanitizer"
+    KILLED_BY_RESOURCE_LIMIT = "killed_by_resource_limit"
     TIMEOUT = "timeout"
     SURVIVED = "survived"
     SKIPPED_UNEVALUATED = "skipped_unevaluated"
@@ -28,7 +31,9 @@ class SurvivorKind(enum.StrEnum):
     NOT_DETECTED = "not_detected"
 
 
-DETECTED_STATES = frozenset({MutantState.KILLED, MutantState.KILLED_BY_SANITIZER, MutantState.TIMEOUT})
+DETECTED_STATES = frozenset(
+    {MutantState.KILLED, MutantState.KILLED_BY_SANITIZER, MutantState.KILLED_BY_RESOURCE_LIMIT, MutantState.TIMEOUT}
+)
 SCORED_STATES = DETECTED_STATES | {MutantState.SURVIVED}
 
 # Lower index wins when one mutant has different results under different tests.
@@ -39,9 +44,20 @@ def has_sanitizer_report(output: str) -> bool:
     return SANITIZER_REPORT.search(output) is not None
 
 
-def classify_run(run: RunResult) -> MutantState:
+def ran_out_of_memory(run: RunResult, limit_bytes: int | None) -> bool:
+    """Whether the test failed because it reached its memory limit, by its own report or by how much it used."""
+    if run.returncode == 0 or limit_bytes is None:
+        return False
+    reached = run.peak_memory is not None and run.peak_memory >= limit_bytes
+    return reached or MEMORY_EXHAUSTED.search(run.output) is not None
+
+
+def classify_run(run: RunResult, memory_limit_bytes: int | None = None) -> MutantState:
     if run.timed_out:
         return MutantState.TIMEOUT
+    # Before the sanitizer check: ASan reports the exhausted limit itself.
+    if ran_out_of_memory(run, memory_limit_bytes):
+        return MutantState.KILLED_BY_RESOURCE_LIMIT
     if has_sanitizer_report(run.output):
         return MutantState.KILLED_BY_SANITIZER
     if run.returncode != 0:
