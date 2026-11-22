@@ -9,6 +9,7 @@ from typing import Any, Self, TextIO
 
 from . import NAME
 from .mutators import Mutant
+from .patterns import pattern_lines, patterns_json
 from .results import (
     DETECTED_STATES,
     CombinedResult,
@@ -184,6 +185,13 @@ def _markdown_file_table(combined: Sequence[CombinedResult]) -> list[str]:
     ]
 
 
+def _markdown_patterns(combined: Sequence[CombinedResult]) -> list[str]:
+    lines = pattern_lines(combined)
+    if not lines:
+        return []
+    return ["", "### Patterns", "", *(f"- {line}" for line in lines)]
+
+
 def _markdown_survivors(combined: Sequence[CombinedResult]) -> list[str]:
     survivors = [entry for entry in combined if entry.state is MutantState.SURVIVED]
     if not survivors:
@@ -213,6 +221,7 @@ def markdown_summary(combined: Sequence[CombinedResult], threshold: float | None
         _markdown_counts(combined),
         "",
         *_markdown_file_table(combined),
+        *_markdown_patterns(combined),
         *_markdown_survivors(combined),
     ]
     return "\n".join(lines) + "\n"
@@ -235,14 +244,20 @@ def _mutant_element(entry: CombinedResult) -> dict[str, Any]:
     }
 
 
-def mutation_testing_elements(combined: Iterable[CombinedResult], sources: Mapping[str, str]) -> dict[str, Any]:
+def mutation_testing_elements(combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> dict[str, Any]:
+    """The report in the mutation-testing-elements schema, plus strain's `patterns` for tools and agents."""
     files: dict[str, Any] = {}
     for entry in combined:
         file_report = files.setdefault(
             entry.mutant.file, {"language": "cpp", "source": sources[entry.mutant.file], "mutants": []}
         )
         file_report["mutants"].append(_mutant_element(entry))
-    return {"schemaVersion": "1", "thresholds": {"high": 80, "low": 60}, "files": files}
+    return {
+        "schemaVersion": "1",
+        "thresholds": {"high": 80, "low": 60},
+        "files": files,
+        "patterns": patterns_json(combined),
+    }
 
 
 PreviousResults = dict[tuple[str, str], tuple[MutantState, SurvivorKind | None]]

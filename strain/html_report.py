@@ -1,10 +1,12 @@
 """`index.html`: one self-contained page with the score, a table of files and the source annotated with its mutants."""
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from html import escape
 
 from . import NAME
 from .console import HIGH_SCORE, LOW_SCORE
+from .patterns import pattern_lines
 from .report import TAB_WIDTH, FileScore, file_scores, format_score, hint
 from .results import DETECTED_STATES, CombinedResult, MutantState, mutation_score
 
@@ -127,6 +129,18 @@ def _survivor_list(combined: Sequence[CombinedResult]) -> list[str]:
     return [f"<h2>Survivors ({len(survivors)})</h2>", "<ul>", *links, "</ul>"]
 
 
+def _inline_code(text: str) -> str:
+    """`text`, escaped, with its Markdown code spans as <code>."""
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", escape(text))
+
+
+def _pattern_list(combined: Sequence[CombinedResult]) -> list[str]:
+    lines = pattern_lines(combined)
+    if not lines:
+        return []
+    return ["<h2>Patterns</h2>", "<ul>", *(f"<li>{_inline_code(line)}</li>" for line in lines), "</ul>"]
+
+
 def _file_sections(combined: Sequence[CombinedResult], sources: Mapping[str, str]) -> list[str]:
     sections: list[str] = []
     for row in file_scores(combined):
@@ -152,6 +166,7 @@ def html_report(combined: Sequence[CombinedResult], sources: Mapping[str, str]) 
         [
             f"<p>{len(combined)} mutants: {_counts(combined)}</p>",
             *_files_table(combined),
+            *_pattern_list(combined),
             *_survivor_list(combined),
             *_file_sections(combined, sources),
         ]
