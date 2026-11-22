@@ -241,6 +241,7 @@ class Runner:
         self.build_failures = BuildFailureCache()
         self.results: list[MutantResult] = []
         self.engine = Engine.LEXER
+        self.checked = False
         self.sites: dict[str, list[OperatorSite]] = {}
         self.test_targets: dict[str, Target] = {}
         self.build_is_mutated = False
@@ -272,7 +273,9 @@ class Runner:
             raise StrainError(failure)
         self.console.step(f"{success} ({time.monotonic() - start:.1f}s)")
 
-    def prepare(self) -> None:
+    def check(self) -> None:
+        """Everything `prepare` checks before it builds, so a failure stops the run before the live TUI starts."""
+        self.show_banner()
         self.console.heading("Preparing")
         for path in self.journal.recover():
             self.console.warn(f"restored {path} from an interrupted run")
@@ -288,6 +291,11 @@ class Runner:
         self.check_safety_nets(commands)
         self.check_generator()
         self.engine = self.resolve_engine()
+        self.checked = True
+
+    def prepare(self) -> None:
+        if not self.checked:
+            self.check()
         self.build_or_fail(
             f"building {self.build_dir}",
             "unmutated build is up to date",
@@ -913,7 +921,6 @@ class Runner:
 
     def run(self) -> int:
         start = time.monotonic()
-        self.show_banner()
         self.prepare()
         tests = ctest.list_tests(self.build_dir, self.options.include, self.options.exclude)
         if not tests:
@@ -942,6 +949,7 @@ class Runner:
 def run(options: RunOptions, out: TextIO, err: TextIO) -> int:
     runner = Runner(options, out, err)
     try:
+        runner.check()
         return runner.console.run(runner.run)
     finally:
         runner.console.finish()
