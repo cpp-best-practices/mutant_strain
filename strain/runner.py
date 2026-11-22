@@ -26,6 +26,7 @@ from .build import (
     target_artifacts,
 )
 from .build_cache import BuildFailureCache, cache_path
+from .compile_time import NOT_COMPILE_TIME, compile_time_only_lines, error_messages, is_constant_evaluation_failure
 from .config import CONFIG_FILE, Config, load_config
 from .console import BOLD, DIM, RED, STATE_STYLES, YELLOW, UiMode, create_console, plural, score_style
 from .coverage import FileCoverage, GcovCoverage
@@ -110,6 +111,7 @@ class RunOptions:
     strategy: Strategy = Strategy.PER_TEST
     order: Order = Order.COST
     build_cache: bool = True
+    compile_time: bool = False
     engine: Engine = Engine.AUTO
     safety_nets: Level | None = None
     threshold: float | None = None
@@ -251,6 +253,9 @@ class Runner:
         self.eta: Eta | None = None
         self.mutant_started_at = 0.0
         self.mutant_build_seconds = 0.0
+        self.build_output: list[str] = []
+        self.compile_time_candidates: dict[str, set[int]] = {}
+        self.runtime_lines: dict[str, set[int]] = {}
 
     def show_banner(self) -> None:
         console = self.console
@@ -261,10 +266,15 @@ class Runner:
 
     def build(self, target: str | None = None) -> bool:
         self.console.build_started(shlex.join(build_command(Path(short_path(self.build_dir)), target, self.build_jobs)))
+        self.build_output = []
         try:
-            return build(self.build_dir, target, self.console.build_output, self.build_jobs)
+            return build(self.build_dir, target, self.keep_build_output, self.build_jobs)
         finally:
             self.build_clock.build_finished()
+
+    def keep_build_output(self, line: str) -> None:
+        self.build_output.append(line)
+        self.console.build_output(line)
 
     def build_or_fail(self, activity: str, success: str, failure: str) -> None:
         self.console.status(f"  {activity}…")
@@ -430,11 +440,34 @@ class Runner:
             self.console.warn(f"{source.relative}: {error}; using the {fallback} engine for this file")
             return operator_sites(fallback, source.text)
 
+    def in_scope(self, source: SourceFile, lines: set[int]) -> set[int]:
+        """`lines` restricted to the lines changed since `--since`, if given."""
+        return lines if self.since is None else lines & self.since.get(source.relative, set())
+
+    def compile_time_lines(self, source: SourceFile) -> set[int]:
+        """The lines of `source` only evaluated at compile time, remembered so the reports can list them."""
+        site_lines = {site.line for site in self.sites_for(source)}
+        lines = self.in_scope(source, compile_time_only_lines(source.text, source.coverage, site_lines))
+        self.compile_time_candidates.setdefault(source.relative, set()).update(lines)
+        self.runtime_lines.setdefault(source.relative, set()).update(source.coverage.executed_lines())
+        return lines
+
     def mutants_for(self, source: SourceFile) -> list[Mutant]:
-        lines = source.coverage.executed_lines()
-        if self.since is not None:
-            lines &= self.since.get(source.relative, set())
+        lines = self.in_scope(source, source.coverage.executed_lines())
+        compile_time = self.compile_time_lines(source)
+        if self.options.compile_time:
+            lines |= compile_time
         return mutants_at(source.relative, self.sites_for(source), lines, self.options.max_per_line)
+
+    def not_mutated_at_compile_time(self) -> list[tuple[str, int]]:
+        """The compile-time only lines no selected test executes, unless --compile-time mutated them."""
+        if self.options.compile_time:
+            return []
+        return [
+            (file, line)
+            for file, candidates in sorted(self.compile_time_candidates.items())
+            for line in sorted(candidates - self.runtime_lines.get(file, set()))
+        ]
 
     def plan_mutants(self, sources: Sequence[SourceFile]) -> list[PlannedMutant]:
         executed = sum(len(source.coverage.executed_lines()) for source in sources)
@@ -463,26 +496,34 @@ class Runner:
         targets = [self.target_for(test) for test in tests]
         return [None] if None in targets else list(dict.fromkeys(targets))
 
-    def build_failure(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> str | None:
-        """Compiles the mutated source; returns why it does not build, or None when it does."""
+    def build_failure(
+        self, planned: PlannedMutant, targets: Sequence[str | None], label: str
+    ) -> tuple[str, str] | None:
+        """Compiles the mutated source; returns why it does not build and the diagnostics, or None when it does."""
         command = self.database.command_for(planned.source.path)
         self.console.status(f"{label}  checking syntax…")
-        if command is not None and not command.passes_syntax_check():
-            return "rejected by -fsyntax-only"
+        syntax_errors = None if command is None else command.syntax_errors()
+        if syntax_errors is not None:
+            return "rejected by -fsyntax-only", syntax_errors
         self.console.status(f"{label}  building…")
         if not all(self.build(target) for target in targets):
-            return "build failed"
+            return "build failed", "\n".join(self.build_output)
         return None
 
     def build_mutant(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> Outcome | None:
-        """Compiles the mutated source; returns the compile error outcome, and remembers it, when it does not build."""
+        """Compiles the mutated source; returns, and remembers, the outcome of a mutant that does not build."""
         start = time.monotonic()
         failure = self.build_failure(planned, targets, label)
         self.observe_build(planned.mutant.file, time.monotonic() - start)
         if failure is None:
             return None
-        self.build_failures.add(planned.mutant, failure)
-        return Outcome(MutantState.COMPILE_ERROR, detail=failure)
+        detail, diagnostics = failure
+        if is_constant_evaluation_failure(diagnostics):
+            reason = error_messages(diagnostics)[0]
+            self.build_failures.add_compile_time_kill(planned.mutant, reason)
+            return Outcome(MutantState.KILLED_AT_COMPILE_TIME, detail=reason)
+        self.build_failures.add(planned.mutant, detail)
+        return Outcome(MutantState.COMPILE_ERROR, detail=detail)
 
     def observe_build(self, file: str, seconds: float) -> None:
         self.build_times.observe(file, seconds)
@@ -507,7 +548,10 @@ class Runner:
         return None if self.eta is None else self.eta.remaining()
 
     def known_build_failure(self, planned: PlannedMutant) -> Outcome | None:
-        """The compile error a mutant known to break the build gets without mutating or building anything."""
+        """The outcome a mutant known to break the build gets without mutating or building anything."""
+        kill = self.build_failures.compile_time_kill(planned.mutant)
+        if kill is not None:
+            return Outcome(MutantState.KILLED_AT_COMPILE_TIME, detail=f"{kill}, known from the cache")
         failure = self.build_failures.failure(planned.mutant)
         return (
             None if failure is None else Outcome(MutantState.COMPILE_ERROR, detail=f"{failure}, known from the cache")
@@ -578,13 +622,7 @@ class Runner:
         if duration is None:
             return []
         timeout = mutant_timeout(duration)
-        coverage = self.coverage.collect()
-        self.verify_coverage_data(test, coverage)
-        planned = order_planned(
-            self.plan_mutants(self.source_files(coverage, self.test_code(test))), self.options.order, self.build_times
-        )
-        self.console.plan([entry.mutant for entry in planned])
-        self.start_estimate([duration] * len(planned), [entry.mutant.file for entry in planned])
+        planned = self.plan_test(test, duration)
         width = len(str(len(planned)))
         results: list[MutantResult] = []
         for number, entry in enumerate(planned, start=1):
@@ -607,6 +645,16 @@ class Runner:
             self.console.mutant_finished(number - 1, outcome.state)
         self.rebuild_if_mutated()
         return results
+
+    def plan_test(self, test: str, duration: float) -> list[PlannedMutant]:
+        coverage = self.coverage.collect()
+        self.verify_coverage_data(test, coverage)
+        planned = order_planned(
+            self.plan_mutants(self.source_files(coverage, self.test_code(test))), self.options.order, self.build_times
+        )
+        self.console.plan([entry.mutant for entry in planned])
+        self.start_estimate([duration] * len(planned), [entry.mutant.file for entry in planned])
+        return planned
 
     def verify_coverage_data(self, test: str, coverage: dict[Path, FileCoverage]) -> None:
         if self.coverage_verified:
@@ -668,8 +716,21 @@ class Runner:
         no_mutants = self.why_no_mutants()
         (report_dir / "index.html").write_text(html_report(combined, sources, no_mutants), encoding="utf-8")
         (report_dir / "summary.md").write_text(
-            markdown_summary(combined, self.options.threshold, no_mutants), encoding="utf-8"
+            markdown_summary(combined, self.options.threshold, no_mutants, self.compile_time_notes()), encoding="utf-8"
         )
+
+    def compile_time_notes(self) -> list[str]:
+        lines = self.not_mutated_at_compile_time()
+        if not lines:
+            return []
+        return [f"{plural(len(lines), 'line')} {NOT_COMPILE_TIME}; mutate them with --compile-time"]
+
+    def show_not_mutated(self) -> None:
+        lines = self.not_mutated_at_compile_time()
+        if lines:
+            self.console.heading(f"Not mutated ({len(lines)})")
+            for file, line in lines:
+                self.console.line(f"  {file}:{line}: {self.console.paint(NOT_COMPILE_TIME, YELLOW)}")
 
     def why_no_mutants(self) -> str:
         """Why a run may have no mutants; with --since, an empty run passes, so it must say why."""
@@ -739,6 +800,8 @@ class Runner:
         console.field("mutants", f"{len(combined)}   {'  '.join(counts)}" if counts else "none", 8)
         if not combined:
             console.line(f"  {console.paint(self.why_no_mutants(), BOLD + YELLOW)}")
+        for note in self.compile_time_notes():
+            console.line(f"  {console.paint(note, YELLOW)}")
         percent = None if score is None else score * 100
         console.line(
             f"  {console.paint('mutation score', BOLD)} {console.score(percent)}{self.threshold_note(percent)}"
@@ -915,6 +978,7 @@ class Runner:
         self.show_patterns(combined)
         self.show_action_items(combined)
         self.show_files(combined)
+        self.show_not_mutated()
         self.show_summary(combined, score)
         self.console.line(f"\n{self.console.paint(f'{ending} after {time.monotonic() - start:.1f}s', DIM)}")
         return score

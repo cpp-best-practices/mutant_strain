@@ -201,7 +201,7 @@ class MarkdownSummaryTest(unittest.TestCase):
     def test_summary_without_mutants_says_nothing_was_tested_and_why(self) -> None:
         self.assertEqual(
             markdown_summary([], threshold=None, no_mutants="No source line changed since main."),
-            "## strain mutation testing\n\n**Nothing was mutation tested.** No source line changed since main.\n",
+            "## mutant_strain mutation testing\n\n**Nothing was mutation tested.** No source line changed since main.\n",
         )
         self.assertIn("No mutants were generated.", markdown_summary([], threshold=None))
 

@@ -31,6 +31,11 @@ def messages(source: Path) -> list[tuple[int, str]]:
     ]
 
 
+def normalized(distribution: str) -> str:
+    """Normalise a distribution name as PyPI does, so `mutant-strain` and `mutant_strain` match."""
+    return re.sub(r"[-_.]+", "-", distribution).lower()
+
+
 def pyproject() -> dict:
     return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -40,7 +45,7 @@ class ProjectNameTest(unittest.TestCase):
         self.assertEqual(NAME, "mutant_strain")
 
     def test_the_distribution_is_named_mutant_strain(self) -> None:
-        self.assertEqual(pyproject()["project"]["name"], NAME)
+        self.assertEqual(normalized(pyproject()["project"]["name"]), normalized(NAME))
 
     def test_the_command_is_installed_as_mutant_strain(self) -> None:
         self.assertEqual(pyproject()["project"]["scripts"][NAME], "strain.cli:main")

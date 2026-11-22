@@ -25,6 +25,7 @@ CLEAR_LINE = "\r\033[K"
 STATE_STYLES: Mapping[str, str] = {
     MutantState.KILLED: GREEN,
     MutantState.KILLED_BY_SANITIZER: GREEN,
+    MutantState.KILLED_AT_COMPILE_TIME: GREEN,
     MutantState.TIMEOUT: GREEN,
     MutantState.SURVIVED: BOLD + RED,
     MutantState.SKIPPED_UNEVALUATED: DIM,

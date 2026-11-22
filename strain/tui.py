@@ -43,7 +43,7 @@ from .live_state import (
 )
 from .mutators import Mutant, apply_mutant, describe_mutant
 from .report import format_score, hint
-from .results import CombinedResult, MutantResult, MutantState
+from .results import DETECTED_STATES, CombinedResult, MutantResult, MutantState
 from .safety_nets import Level, RelaxedSafetyNet, SafetyNet
 
 REFRESH_SECONDS = 0.1
@@ -66,6 +66,7 @@ EQUIVALENT_HINT = f"equivalent? list it under [ignore] mutants in {CONFIG_FILE}"
 STATE_GLYPHS = {
     MutantState.KILLED: "✔",
     MutantState.KILLED_BY_SANITIZER: "✔",
+    MutantState.KILLED_AT_COMPILE_TIME: "✔",
     MutantState.TIMEOUT: "✔",
     MutantState.SURVIVED: "✗",
     MutantState.SKIPPED_UNEVALUATED: "·",
@@ -77,6 +78,7 @@ STATE_GLYPHS = {
 STATE_STYLES = {
     MutantState.KILLED: "green",
     MutantState.KILLED_BY_SANITIZER: "green",
+    MutantState.KILLED_AT_COMPILE_TIME: "green",
     MutantState.TIMEOUT: "green",
     MutantState.SURVIVED: "bold red",
     MutantState.SKIPPED_UNEVALUATED: "dim",
@@ -88,6 +90,7 @@ STATE_STYLES = {
 # Narrow lists use these labels; the details give the full state.
 SHORT_STATES = {
     MutantState.KILLED_BY_SANITIZER: "sanitizer",
+    MutantState.KILLED_AT_COMPILE_TIME: "constexpr",
     MutantState.COMPILE_ERROR: "no build",
     MutantState.SKIPPED_UNEVALUATED: "skipped",
 }
@@ -190,7 +193,7 @@ def map_category(state: str) -> str:
         return "pending"
     if state == MutantState.SURVIVED:
         return "survived"
-    if state in (MutantState.KILLED, MutantState.KILLED_BY_SANITIZER, MutantState.TIMEOUT):
+    if state in DETECTED_STATES:
         return "detected"
     return "other"
 

@@ -28,6 +28,9 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-R", dest="include", metavar="REGEX", help="include tests by regex, as in ctest")
     parser.add_argument("-E", dest="exclude", metavar="REGEX", help="exclude tests by regex, as in ctest")
     parser.add_argument("--since", metavar="REF", help="mutate only lines changed since a git ref")
+
+
+def _add_scheduling_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--strategy",
         type=Strategy,
@@ -42,6 +45,11 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
         choices=list(Order),
         default=Order.COST,
         help="cost (the mutants with the cheapest tests and builds first) or source (by file and offset)",
+    )
+    parser.add_argument(
+        "--compile-time",
+        action="store_true",
+        help="also mutate constexpr and consteval code no test executes; a failed static_assert kills the mutant",
     )
     parser.add_argument(
         "--no-build-cache",
@@ -89,6 +97,7 @@ def _add_report_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     _add_selection_arguments(parser)
+    _add_scheduling_arguments(parser)
     _add_backend_arguments(parser)
     _add_policy_arguments(parser)
     _add_report_arguments(parser)
@@ -111,6 +120,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         strategy=arguments.strategy,
         order=arguments.order,
         build_cache=arguments.build_cache,
+        compile_time=arguments.compile_time,
         engine=arguments.engine,
         safety_nets=arguments.safety_nets,
         threshold=arguments.threshold,

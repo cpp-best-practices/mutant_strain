@@ -53,7 +53,7 @@ class WheelTest(unittest.TestCase):
     def test_the_wheel_installs_the_strain_package_and_command(self) -> None:
         self.assertIn("strain/cli.py", self.names)
         self.assertFalse([name for name in self.names if name.startswith("tests/")])
-        self.assertRegex(self.entry_points, r"(?m)^strain = strain\.cli:main$")
+        self.assertRegex(self.entry_points, r"(?m)^mutant_strain = strain\.cli:main$")
 
     def test_the_metadata_declares_the_license(self) -> None:
         self.assertEqual(self.metadata["License-Expression"], "Unlicense")

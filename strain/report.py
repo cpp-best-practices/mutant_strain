@@ -23,6 +23,7 @@ from .results import (
 MUTATION_TESTING_ELEMENTS_STATUS = {
     MutantState.KILLED: "Killed",
     MutantState.KILLED_BY_SANITIZER: "Killed",
+    MutantState.KILLED_AT_COMPILE_TIME: "Killed",
     MutantState.TIMEOUT: "Timeout",
     MutantState.SURVIVED: "Survived",
     MutantState.SKIPPED_UNEVALUATED: "Ignored",
@@ -211,20 +212,28 @@ def _markdown_survivors(combined: Sequence[CombinedResult]) -> list[str]:
 NO_MUTANTS = "No mutants were generated."
 
 
-def markdown_summary(combined: Sequence[CombinedResult], threshold: float | None, no_mutants: str = NO_MUTANTS) -> str:
+def markdown_summary(
+    combined: Sequence[CombinedResult],
+    threshold: float | None,
+    no_mutants: str = NO_MUTANTS,
+    notes: Sequence[str] = (),
+) -> str:
     """A summary for CI pages such as `$GITHUB_STEP_SUMMARY` or a pull request comment.
 
-    `no_mutants` says why there is nothing to show, so an empty run doesn't read like a clean one.
+    `no_mutants` says why there is nothing to show, so an empty run doesn't read like a clean one; `notes` say what
+    the run could not mutate.
     """
     heading = [f"## {NAME} mutation testing", ""]
+    note_lines = [line for note in notes for line in ("", f"⚠️ {note}")]
     if not combined:
-        return "\n".join([*heading, f"**Nothing was mutation tested.** {no_mutants}"]) + "\n"
+        return "\n".join([*heading, f"**Nothing was mutation tested.** {no_mutants}", *note_lines]) + "\n"
     score = mutation_score(entry.state for entry in combined)
     lines = [
         *heading,
         f"**Mutation score: {format_score(score)}**{_markdown_threshold(score, threshold)}",
         "",
         _markdown_counts(combined),
+        *note_lines,
         "",
         *_markdown_file_table(combined),
         *_markdown_patterns(combined),

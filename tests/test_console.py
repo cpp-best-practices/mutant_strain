@@ -62,7 +62,7 @@ class ConsoleTest(unittest.TestCase):
         console.step("working tree is clean")
         console.status("building…")
         console.line(f"{console.state(MutantState.SURVIVED)}|")
-        self.assertEqual(out.getvalue(), "\n▸ Preparing\n  ✓ working tree is clean\nsurvived           |\n")
+        self.assertEqual(out.getvalue(), "\n▸ Preparing\n  ✓ working tree is clean\nsurvived              |\n")
 
     def test_live_status_is_cleared_before_the_next_line(self) -> None:
         out = TerminalBuffer()
@@ -114,7 +114,7 @@ class CreateConsoleTest(unittest.TestCase):
         with mock.patch("importlib.util.find_spec", return_value=None):
             console = create_console(TerminalBuffer(), err, UiMode.LIVE)
         self.assertIs(type(console), Console)
-        self.assertIn("--ui live needs Textual: pip install 'mutant-strain[ui]'", err.getvalue())
+        self.assertIn("--ui live needs Textual: pip install 'mutant_strain[ui]'", err.getvalue())
 
     @unittest.skipUnless(importlib.util.find_spec("textual"), "the TUI needs Textual")
     def test_live_mode_on_a_terminal_uses_the_tui(self) -> None:
