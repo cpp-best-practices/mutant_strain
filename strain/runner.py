@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
-from . import ctest, git
+from . import NAME, ctest, git
 from .build import (
     BuildClock,
     CompilationDatabase,
@@ -43,6 +43,7 @@ from .mutators import (
 )
 from .operator_sites import EngineError, OperatorSite
 from .html_report import html_report
+from .patterns import pattern_lines
 from .report import (
     EventLog,
     FileScore,
@@ -220,7 +221,7 @@ class Runner:
 
     def show_banner(self) -> None:
         console = self.console
-        console.line(f"{console.paint('strain', BOLD)} {console.paint('mutation testing for CMake/CTest', DIM)}")
+        console.line(f"{console.paint(NAME, BOLD)} {console.paint('mutation testing for CMake/CTest', DIM)}")
         console.field("source", str(self.source_dir), 7)
         console.field("build", str(self.build_dir), 7)
         console.field("reports", str(self.options.report_dir), 7)
@@ -244,7 +245,7 @@ class Runner:
         for path in self.journal.recover():
             self.console.warn(f"restored {path} from an interrupted run")
         if not git.is_clean(self.source_dir):
-            raise StrainError(f"strain needs a clean working tree: commit or stash the changes in {self.source_dir}")
+            raise StrainError(f"{NAME} needs a clean working tree: commit or stash the changes in {self.source_dir}")
         self.console.step("working tree is clean")
         self.config = load_config(self.source_dir)
         self.console.step(self.describe_config())
@@ -625,6 +626,14 @@ class Runner:
             f"  {console.paint(f'{row.survived} survived', survived_style)}"
         )
 
+    def show_patterns(self, combined: Sequence[CombinedResult]) -> None:
+        """The groups of survivors that one kind of test would kill, ahead of the survivors one by one."""
+        lines = pattern_lines(combined)
+        if lines:
+            self.console.heading("Patterns")
+            for line in lines:
+                self.console.line(f"  · {line}")
+
     def show_action_items(self, combined: Sequence[CombinedResult]) -> None:
         items = action_items(combined, limit=None if self.options.show_all else DEFAULT_ACTION_ITEMS)
         if items:
@@ -809,6 +818,7 @@ class Runner:
         self.write_reports(combined, sources)
         events.emit(ending, score=score)
         self.show_survivors(combined, sources)
+        self.show_patterns(combined)
         self.show_action_items(combined)
         self.show_files(combined)
         self.show_summary(combined, score)

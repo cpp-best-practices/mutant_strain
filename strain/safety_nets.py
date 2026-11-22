@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import NAME
 from .build import CompileCommand, cmake_is_true
 
 
@@ -44,12 +45,12 @@ EXPLANATIONS: dict[SafetyNet, str] = {
     ),
     SafetyNet.OPTIMIZATION: (
         "build with -O0 or -Og (configure with -DCMAKE_BUILD_TYPE=Debug): at -O1 and above inlining and merged blocks "
-        "make gcov attribute lines inaccurately, so strain skips lines that ran or mutates lines that did not, and "
-        "every mutant pays for a slower optimized rebuild"
+        f"make gcov attribute lines inaccurately, so {NAME} skips lines that ran or mutates lines that did not, "
+        "and every mutant pays for a slower optimized rebuild"
     ),
     SafetyNet.PARTIAL_COVERAGE: (
-        "add --coverage to these translation units too: strain only mutates lines that gcov reports as executed, so "
-        "code built without coverage never gets a mutant and its weak tests stay hidden"
+        f"add --coverage to these translation units too: {NAME} only mutates lines that gcov reports as "
+        "executed, so code built without coverage never gets a mutant and its weak tests stay hidden"
     ),
     SafetyNet.UNITY_BUILD: (
         "configure with -DCMAKE_UNITY_BUILD=OFF: a unity build compiles merged unity_*.cxx files instead of your "

@@ -3,7 +3,6 @@ requires = ["setuptools>=84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# "strain" is taken on PyPI, so the distribution is named after the repository; the package and command stay strain.
 name = "mutant-strain"
 version = "0.1.0"
 description = "Mutation testing for C++ projects built with CMake and tested with CTest"
@@ -37,7 +36,7 @@ ui = ["textual>=8.2.8"]
 ui-snapshot = ["textual>=8.2.8", "pyte>=0.8.2", "pillow>=13.0.0"]
 
 [project.scripts]
-strain = "strain.cli:main"
+mutant_strain = "strain.cli:main"
 
 [tool.setuptools]
 packages = ["strain"]

@@ -93,7 +93,7 @@ class ConsoleTest(unittest.TestCase):
         console.status("building…")
         console.warn("test t fails without mutation")
         self.assertEqual(out.getvalue(), "")
-        self.assertEqual(err.getvalue(), "strain: warning: test t fails without mutation\n")
+        self.assertEqual(err.getvalue(), "mutant_strain: warning: test t fails without mutation\n")
 
 
 class CreateConsoleTest(unittest.TestCase):
