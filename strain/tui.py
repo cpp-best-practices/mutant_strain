@@ -297,7 +297,7 @@ def relaxed_net_view(failure: RelaxedSafetyNet) -> RenderableType:
 def safety_report(state: LiveState) -> RenderableType:
     """The safety nets the configuration let fail, what that means for the results, and the nets that hold."""
     if state.relaxed_nets is None:
-        return Text("mutant_strain checks the safety nets while it prepares the run", style="dim")
+        return Text(f"{NAME} checks the safety nets while it prepares the run", style="dim")
     holding = Text.assemble(("✔ hold: ", "green"), ", ".join(state.holding_nets) or "none")
     if not state.relaxed_nets:
         return Text.assemble(("✔ every safety net holds: ", "bold green"), ", ".join(state.holding_nets))

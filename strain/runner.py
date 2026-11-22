@@ -244,9 +244,7 @@ class Runner:
         for path in self.journal.recover():
             self.console.warn(f"restored {path} from an interrupted run")
         if not git.is_clean(self.source_dir):
-            raise StrainError(
-                f"mutant_strain needs a clean working tree: commit or stash the changes in {self.source_dir}"
-            )
+            raise StrainError(f"{NAME} needs a clean working tree: commit or stash the changes in {self.source_dir}")
         self.console.step("working tree is clean")
         self.config = load_config(self.source_dir)
         self.console.step(self.describe_config())

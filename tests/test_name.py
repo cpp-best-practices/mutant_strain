@@ -57,6 +57,14 @@ class ProjectNameTest(unittest.TestCase):
                 with self.subTest(file=source.name, line=number):
                     self.assertIsNone(OLD_NAME.search(text), text)
 
+    def test_messages_take_the_name_from_strain_name(self) -> None:
+        for source in sorted(SOURCES.glob("*.py")):
+            if source.name == "__init__.py":
+                continue
+            for number, text in messages(source):
+                with self.subTest(file=source.name, line=number):
+                    self.assertNotIn(NAME, text)
+
 
 if __name__ == "__main__":
     unittest.main()
