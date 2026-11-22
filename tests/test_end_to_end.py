@@ -5,6 +5,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+from collections.abc import Callable
 from pathlib import Path
 
 from strain import cppcheck_engine, tree_sitter_engine
@@ -13,7 +15,7 @@ from strain.console import Console
 from strain.mutators import Engine, fallback_engine
 from strain.coverage import LineCoverage
 from strain.results import MutantResult, MutantState
-from strain.runner import Runner, RunOptions
+from strain.runner import Runner, RunOptions, StrainError, run
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_project"
 TOOLS = ("cmake", "ctest", "g++", "gcov", "git")
@@ -59,6 +61,18 @@ class RecordingConsole(Console):
 
     def run_finished(self) -> None:
         self.finished_runs += 1
+
+
+class LiveConsole(RecordingConsole):
+    """Records whether the run reached the point where `--ui live` takes over the terminal."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.took_over = False
+
+    def run(self, work: Callable[[], int]) -> int:
+        self.took_over = True
+        return super().run(work)
 
 
 class InterruptingConsole(RecordingConsole):
@@ -473,6 +487,17 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("auto_var_init", stderr)
         self.assertIn("add -D_GLIBCXX_ASSERTIONS", stderr)
         self.assertIn("add -ftrivial-auto-var-init=pattern", stderr)
+
+    def test_failed_checks_stop_the_run_before_the_live_tui_takes_over_the_terminal(self) -> None:
+        configure_project(self.root, self.build_dir, cxx_flags="--coverage -fsanitize=address,undefined")
+        console = LiveConsole()
+
+        with mock.patch("strain.runner.create_console", return_value=console):
+            with self.assertRaisesRegex(StrainError, "stdlib_assertions"):
+                run(RunOptions(build_dir=self.build_dir, report_dir=self.report_dir), io.StringIO(), io.StringIO())
+
+        self.assertFalse(console.took_over)
+        self.assertIn("working tree is clean", console.out.getvalue())
 
     def test_release_build_is_refused_because_ndebug_removes_assertions(self) -> None:
         configure_project(self.root, self.build_dir, build_type="Release")
