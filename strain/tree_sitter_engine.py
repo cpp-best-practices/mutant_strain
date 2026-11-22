@@ -5,10 +5,14 @@ import importlib.util
 from collections.abc import Iterator
 from typing import Any
 
+from . import NAME
 from .operator_sites import SOURCE_ENCODING, SOURCE_ERRORS, EngineError, LineIndex, OperatorSite
 
 MODULES = ("tree_sitter", "tree_sitter_cpp")
-MISSING = 'the tree-sitter engine needs the tree-sitter and tree-sitter-cpp packages: pip install "strain[tree-sitter]"'
+MISSING = (
+    "the tree-sitter engine needs the tree-sitter and tree-sitter-cpp packages: "
+    f'pip install "{NAME}[tree-sitter]"'
+)
 OPERATOR_EXPRESSIONS = frozenset({"binary_expression", "assignment_expression"})
 # The condition of `#if X > 1` parses as an expression, but the preprocessor evaluates it, not the compiled code.
 PREPROCESSOR_CONDITIONALS = frozenset({"preproc_if", "preproc_elif"})

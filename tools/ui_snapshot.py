@@ -156,7 +156,7 @@ def pump(descriptor: int, stream: pyte.ByteStream, seconds: float) -> bool:
 
 
 def parse_arguments(parser: argparse.ArgumentParser, argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
-    """Parses our own options, which may follow the project, and returns what comes after `--` for `strain run`."""
+    """Parses our own options, which may follow the project, and returns what comes after `--` for `mutant_strain run`."""
     separator = argv.index("--") if "--" in argv else len(argv)
     return parser.parse_args(argv[:separator]), argv[separator + 1 :]
 
