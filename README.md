@@ -1,3 +1,6 @@
+<img width="320" height="294" alt="mutant_strain-scaled" src="https://github.com/user-attachments/assets/a8a2b402-5f9c-4953-85fb-ae967ec555a2" />
+
+
 # mutant_strain
 
 **Mutation testing for C++ projects built with CMake and tested with CTest.**
