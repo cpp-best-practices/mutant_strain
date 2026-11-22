@@ -38,6 +38,14 @@ def _add_scheduling_arguments(parser: argparse.ArgumentParser) -> None:
         default=Strategy.PER_TEST,
         help="per-test (rebuild each mutant for each test) or per-mutant (build each mutant once, run until killed)",
     )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=_positive_int,
+        default=1,
+        metavar="N",
+        help="with --strategy per-mutant, run up to N of the tests covering a mutant at once",
+    )
     parser.add_argument("--skip-killed", action="store_true", help="skip mutants an earlier test already killed")
     parser.add_argument(
         "--order",
@@ -130,6 +138,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         show_all=arguments.show_all,
         ui=arguments.ui,
         report_dir=arguments.report_dir,
+        jobs=arguments.jobs,
     )
 
 
