@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from html import escape
 
+from . import NAME
 from .console import HIGH_SCORE, LOW_SCORE
 from .patterns import pattern_lines
 from .report import TAB_WIDTH, FileScore, file_scores, format_score, hint
@@ -175,9 +176,9 @@ def html_report(combined: Sequence[CombinedResult], sources: Mapping[str, str]) 
     page = [
         "<!DOCTYPE html>",
         '<html lang="en"><head><meta charset="utf-8">',
-        f"<title>strain mutation report: {format_score(score)}</title>",
+        f"<title>{NAME} mutation report: {format_score(score)}</title>",
         f"<style>{STYLE}</style></head><body>",
-        "<h1>strain mutation report</h1>",
+        f"<h1>{NAME} mutation report</h1>",
         f'<div class="score {_score_class(score)}">{format_score(score)}</div>',
         *body,
         "</body></html>",

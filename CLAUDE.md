@@ -1,4 +1,4 @@
-# Working on strain
+# Working on mutant_strain
 
 Build and test: `pip install -e . && pytest`
 
@@ -13,7 +13,7 @@ layout reads well, so look at the TUI before you commit any change to `strain/tu
 `strain/live_state.py` or `strain/console.py`:
 
 1. `pip install -e '.[ui-snapshot]'` (adds `textual`, `pyte` and `pillow`).
-2. Configure a copy of the fixture as a git repository with a coverage build (strain refuses a folder
+2. Configure a copy of the fixture as a git repository with a coverage build (mutant_strain refuses a folder
    without `CMakeCache.txt`), using the flags from `configure_project` in `tests/test_end_to_end.py`:
    ```sh
    demo=build/ui-demo && rm -rf $demo && mkdir -p $demo && cp -r tests/fixtures/sample_project $demo/project
@@ -26,7 +26,7 @@ layout reads well, so look at the TUI before you commit any change to `strain/tu
      -- --build-dir $PWD/$demo/build --report-dir $PWD/$demo/report
    ```
    - This needs the fixture's toolchain (CMake, a C++ compiler, gcov) and takes about a minute.
-   - Arguments after `--` go to `strain run`.
+   - Arguments after `--` go to `mutant_strain run`.
    - Also try a small size such as `--size 80x24` to check truncation and panel sizing.
    - Keys can be mouse events, such as `click:12:5`; `--delay 9` waits for the toasts to fade first.
 3. Read the `ui-snapshots/*.txt` grids to check alignment, and view the `*.png` frames to check

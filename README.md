@@ -1,3 +1,6 @@
+<img width="320" height="294" alt="mutant_strain-scaled" src="https://github.com/user-attachments/assets/a8a2b402-5f9c-4953-85fb-ae967ec555a2" />
+
+
 # mutant_strain
 
 **Mutation testing for C++ projects built with CMake and tested with CTest.**
@@ -190,7 +193,7 @@ strain run --safety-nets=warn
 | `--build-dir` | `.` | CMake build folder |
 | `-R` / `-E` | | Include / exclude tests by regex, as in ctest |
 | `--since <ref>` | | Mutate only lines changed since a git ref |
-| `--strategy` | `per-test` | `per-test` or `per-mutant` |
+| `--strategy` | `per-test` | `per-test`, or `per-mutant`: build each mutant once and run its covering tests, fastest first, until one detects it |
 | `--skip-killed` | off | Skip mutants an earlier test already killed |
 | `--no-build-cache` | off | Don't reuse or save the [build cache](#build-cache) |
 | `--engine` | `auto` | `cppcheck`, `tree-sitter`, `lexer` |
