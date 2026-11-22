@@ -108,7 +108,8 @@ TABLES = {
     "queue": ("Mutants", MUTANT_COLUMNS),
     "survivor-table": ("Survivors", (("where", "location"), ("op", "op"), ("change", "change"), ("kind", "survivor"))),
     "survivor-files": ("Files", (("name", "file"), ("score", "score"), ("bar", ""), ("survived", "survived"))),
-    "mutant-table": ("Mutants", MUTANT_COLUMNS),
+    # Without the time, which the details show, so the table fits beside them at 120 columns.
+    "mutant-table": ("Mutants", MUTANT_COLUMNS[:-1]),
     "stats-files": ("Files", TALLY_COLUMNS),
     "stats-operators": ("Operators", (("name", "operator"), *TALLY_COLUMNS[1:])),
     "stats-tests": (
@@ -362,7 +363,8 @@ def run_scores(state: LiveState) -> Text:
     for kind, count in state.counts().items():
         scores.append("   ")
         scores.append_text(state_text(kind, glyph_only=True))
-        scores.append(f" {kind} {count}", style=STATE_STYLES[kind])
+        # The short labels, so the totals fit beside the timing even with every kind of kill.
+        scores.append(f" {SHORT_STATES.get(kind, kind)} {count}", style=STATE_STYLES[kind])
     return scores
 
 
@@ -743,7 +745,7 @@ class StrainApp(App[None]):
         for state, count in counts.items():
             tab_id = f"filter-{state}"
             existing = filters.query(f"#{tab_id}")
-            label = f"{state} {count}"
+            label = f"{SHORT_STATES.get(state, state)} {count}"
             if existing:
                 existing.first(Tab).label = label
             else:
@@ -824,11 +826,6 @@ class StrainApp(App[None]):
                 Text(location(entry.mutant, short=True)),
                 Text(entry.mutant.operator, style="magenta"),
                 change(entry.mutant),
-                Text(
-                    f"{self.state.durations[entry.mutant.id]:.1f}s" if entry.mutant.id in self.state.durations else "",
-                    style="grey62",
-                    justify="right",
-                ),
             ),
         )
         self.show_selected("mutant-table", "mutant-detail", entries)
