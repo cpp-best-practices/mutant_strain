@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
-from . import ctest, git
+from . import NAME, ctest, git
 from .build import (
     BuildClock,
     CompilationDatabase,
@@ -220,7 +220,7 @@ class Runner:
 
     def show_banner(self) -> None:
         console = self.console
-        console.line(f"{console.paint('strain', BOLD)} {console.paint('mutation testing for CMake/CTest', DIM)}")
+        console.line(f"{console.paint(NAME, BOLD)} {console.paint('mutation testing for CMake/CTest', DIM)}")
         console.field("source", str(self.source_dir), 7)
         console.field("build", str(self.build_dir), 7)
         console.field("reports", str(self.options.report_dir), 7)
@@ -244,7 +244,9 @@ class Runner:
         for path in self.journal.recover():
             self.console.warn(f"restored {path} from an interrupted run")
         if not git.is_clean(self.source_dir):
-            raise StrainError(f"strain needs a clean working tree: commit or stash the changes in {self.source_dir}")
+            raise StrainError(
+                f"mutant_strain needs a clean working tree: commit or stash the changes in {self.source_dir}"
+            )
         self.console.step("working tree is clean")
         self.config = load_config(self.source_dir)
         self.console.step(self.describe_config())

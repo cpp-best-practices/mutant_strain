@@ -160,9 +160,9 @@ def html_report(combined: Sequence[CombinedResult], sources: Mapping[str, str]) 
     page = [
         "<!DOCTYPE html>",
         '<html lang="en"><head><meta charset="utf-8">',
-        f"<title>strain mutation report: {format_score(score)}</title>",
+        f"<title>mutant_strain mutation report: {format_score(score)}</title>",
         f"<style>{STYLE}</style></head><body>",
-        "<h1>strain mutation report</h1>",
+        "<h1>mutant_strain mutation report</h1>",
         f'<div class="score {_score_class(score)}">{format_score(score)}</div>',
         *body,
         "</body></html>",

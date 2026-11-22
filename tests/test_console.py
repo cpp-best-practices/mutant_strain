@@ -93,7 +93,7 @@ class ConsoleTest(unittest.TestCase):
         console.status("building…")
         console.warn("test t fails without mutation")
         self.assertEqual(out.getvalue(), "")
-        self.assertEqual(err.getvalue(), "strain: warning: test t fails without mutation\n")
+        self.assertEqual(err.getvalue(), "mutant_strain: warning: test t fails without mutation\n")
 
 
 class CreateConsoleTest(unittest.TestCase):
@@ -114,7 +114,7 @@ class CreateConsoleTest(unittest.TestCase):
         with mock.patch("importlib.util.find_spec", return_value=None):
             console = create_console(TerminalBuffer(), err, UiMode.LIVE)
         self.assertIs(type(console), Console)
-        self.assertIn("--ui live needs Textual: pip install 'strain[ui]'", err.getvalue())
+        self.assertIn("--ui live needs Textual: pip install 'mutant_strain[ui]'", err.getvalue())
 
     @unittest.skipUnless(importlib.util.find_spec("textual"), "the TUI needs Textual")
     def test_live_mode_on_a_terminal_uses_the_tui(self) -> None:

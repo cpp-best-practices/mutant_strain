@@ -201,7 +201,7 @@ def _markdown_survivors(combined: Sequence[CombinedResult]) -> list[str]:
 
 def markdown_summary(combined: Sequence[CombinedResult], threshold: float | None) -> str:
     """A summary for CI pages such as `$GITHUB_STEP_SUMMARY` or a pull request comment."""
-    heading = ["## strain mutation testing", ""]
+    heading = ["## mutant_strain mutation testing", ""]
     if not combined:
         return "\n".join([*heading, "No mutants were generated."]) + "\n"
     score = mutation_score(entry.state for entry in combined)

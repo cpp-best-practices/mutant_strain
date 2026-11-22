@@ -318,7 +318,7 @@ class TuiConsoleTest(unittest.TestCase):
         console.finish()
         console.finish()
         self.assertEqual(out.getvalue(), "\n▸ Preparing\n")
-        self.assertEqual(err.getvalue(), "strain: warning: test t fails without mutation\n")
+        self.assertEqual(err.getvalue(), "mutant_strain: warning: test t fails without mutation\n")
 
     def test_an_error_in_the_run_closes_the_tui_and_is_raised(self) -> None:
         console = make_console()

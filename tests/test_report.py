@@ -175,7 +175,7 @@ class MarkdownSummaryTest(unittest.TestCase):
         self.assertEqual(
             markdown_summary(combined, threshold=50.0).splitlines(),
             [
-                "## strain mutation testing",
+                "## mutant_strain mutation testing",
                 "",
                 "**Mutation score: 33.3%** ❌ below the 50% threshold",
                 "",
@@ -217,7 +217,7 @@ class HtmlReportTest(unittest.TestCase):
         )
         page = html_report(combined, {"src/math.cpp": SOURCE})
         self.assertTrue(page.startswith("<!DOCTYPE html>"))
-        self.assertIn("<title>strain mutation report: 50.0%</title>", page)
+        self.assertIn("<title>mutant_strain mutation report: 50.0%</title>", page)
         self.assertIn("#include &lt;cmath&gt;", page)
         self.assertIn('id="src/math.cpp:4"', page)
         self.assertIn('class="line survived"', page)
@@ -230,7 +230,7 @@ class HtmlReportTest(unittest.TestCase):
 
     def test_report_without_mutants(self) -> None:
         page = html_report([], {})
-        self.assertIn("<title>strain mutation report: n/a</title>", page)
+        self.assertIn("<title>mutant_strain mutation report: n/a</title>", page)
         self.assertIn("No mutants were generated", page)
 
 

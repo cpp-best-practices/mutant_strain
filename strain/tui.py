@@ -25,6 +25,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import DataTable, Footer, RichLog, Static, Tab, TabbedContent, TabPane, Tabs
 
+from . import NAME
 from .config import CONFIG_FILE
 from .console import Console, UiMode
 from .coverage import LineCoverage
@@ -296,7 +297,7 @@ def relaxed_net_view(failure: RelaxedSafetyNet) -> RenderableType:
 def safety_report(state: LiveState) -> RenderableType:
     """The safety nets the configuration let fail, what that means for the results, and the nets that hold."""
     if state.relaxed_nets is None:
-        return Text("strain checks the safety nets while it prepares the run", style="dim")
+        return Text("mutant_strain checks the safety nets while it prepares the run", style="dim")
     holding = Text.assemble(("✔ hold: ", "green"), ", ".join(state.holding_nets) or "none")
     if not state.relaxed_nets:
         return Text.assemble(("✔ every safety net holds: ", "bold green"), ", ".join(state.holding_nets))
@@ -334,7 +335,7 @@ def run_badge(state: LiveState, paused: bool) -> Text:
 
 def run_position(state: LiveState) -> Text:
     where = Text.assemble(
-        (" ◆ strain ", "bold black on dark_cyan"), "  ", (state.test_name if state.done else state.test, "bold")
+        (f" ◆ {NAME} ", "bold black on dark_cyan"), "  ", (state.test_name if state.done else state.test, "bold")
     )
     if state.current is not None and not state.done:
         where.append(f"  ·  mutant {state.current + 1}/{len(state.queue)}")
@@ -480,7 +481,7 @@ class CodeView(Static):
 
 
 class StrainApp(App[None]):
-    TITLE = "strain"
+    TITLE = NAME
     CSS = """
     Screen { layout: vertical; }
     RunHeader { height: 2; padding: 0 1; }
@@ -1098,7 +1099,7 @@ class TuiConsole(Console):
         self.active = False
         if self.worker is not None and self.worker.is_alive():
             self.request_stop()
-            self.err.write("strain: stopping the run and restoring the sources…\n")
+            self.err.write(f"{NAME}: stopping the run and restoring the sources…\n")
             self.err.flush()
             while self.worker.is_alive():
                 self.worker.join(WORKER_POLL_SECONDS)

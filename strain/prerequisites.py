@@ -8,14 +8,14 @@ from .build import CompileCommand, CompilerIdentity
 
 NO_COVERAGE = (
     "no project translation unit is built with coverage instrumentation; add --coverage to CMAKE_CXX_FLAGS and "
-    "CMAKE_EXE_LINKER_FLAGS: strain only mutates the lines a test executes, and without coverage it sees none, so it "
-    "would mutate nothing and report a pass"
+    "CMAKE_EXE_LINKER_FLAGS: mutant_strain only mutates the lines a test executes, and without coverage it sees none, "
+    "so it would mutate nothing and report a pass"
 )
 SOURCE_BASED_COVERAGE = (
     "the build uses Clang source-based coverage (-fprofile-instr-generate/-fcoverage-mapping), which the gcov backend "
     "cannot read; build with --coverage instead so the tests write .gcda files"
 )
-GCOV_MISSING = "gcov was not found on PATH; strain reads the coverage of every test with gcov"
+GCOV_MISSING = "gcov was not found on PATH; mutant_strain reads the coverage of every test with gcov"
 GCOV_VERSION = re.compile(r"LLVM version (\d[\w.]*)|(\d+\.\d+(?:\.\d+)?)\s*$")
 
 
@@ -75,8 +75,8 @@ def _matching_gcov(compiler: CompilerIdentity) -> str:
 def no_coverage_data(test: str) -> str:
     return (
         f"test {test} passed but no coverage data was written for any project source; add --coverage to "
-        "CMAKE_EXE_LINKER_FLAGS and CMAKE_SHARED_LINKER_FLAGS as well as CMAKE_CXX_FLAGS: without .gcda files strain "
-        "sees no executed lines, so it would mutate nothing and report a pass"
+        "CMAKE_EXE_LINKER_FLAGS and CMAKE_SHARED_LINKER_FLAGS as well as CMAKE_CXX_FLAGS: without .gcda files "
+        "mutant_strain sees no executed lines, so it would mutate nothing and report a pass"
     )
 
 
