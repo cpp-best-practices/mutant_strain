@@ -121,6 +121,15 @@ class ProjectValidatorFindingsTest(unittest.TestCase):
         self.assertTrue(scorecard.is_file())
         self.assertIn("publish_results: true", scorecard.read_text(encoding="utf-8"))
 
+    def test_ci_runs_the_atheris_fuzz_target(self) -> None:
+        target = ROOT / "fuzz" / "fuzz_mutators.py"
+        self.assertRegex(target.read_text(encoding="utf-8"), r"(?m)^\s*atheris\.Setup\(")
+        self.assertRegex(workflow_text(), r"python fuzz/fuzz_mutators\.py -max_total_time=\d+")
+
+    def test_ci_mutation_tests_the_changed_modules(self) -> None:
+        self.assertRegex((ROOT / "pyproject.toml").read_text(encoding="utf-8"), r"(?m)^\[tool\.mutmut\]$")
+        self.assertRegex(workflow_text(), r"mutmut run \$MUTANTS")
+
 
 if __name__ == "__main__":
     unittest.main()

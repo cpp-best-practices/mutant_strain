@@ -59,6 +59,70 @@ jobs:
           python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
           python -m coverage report
 
+  fuzzing:
+    name: fuzzing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install strain and atheris
+        run: |
+          python -m pip install --require-hashes -r requirements-ci.txt
+          python -m pip install --no-deps --no-build-isolation -e .
+
+      - name: Fuzz the lexer engine and the mutants it finds
+        run: python fuzz/fuzz_mutators.py -max_total_time=120
+
+  mutation-testing:
+    name: mutation testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install strain and mutmut
+        run: |
+          python -m pip install --require-hashes -r requirements-ci.txt
+          python -m pip install --no-deps --no-build-isolation -e .
+
+      - name: Choose the changed modules to mutate
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          changed=$(git diff --name-only "$BASE...HEAD" -- 'strain/*.py')
+          modules=$(printf '%s\n' "$changed" | sed -n 's|^strain/\(.*\)\.py$|strain.\1.*|p' | tr '\n' ' ')
+          echo "MUTANTS=$modules" >> "$GITHUB_ENV"
+
+      - name: Mutation test the changed modules
+        if: env.MUTANTS != ''
+        run: |
+          # shellcheck disable=SC2086 # MUTANTS is a list of mutant name patterns, one word each
+          mutmut run $MUTANTS
+
+      - name: Report the surviving mutants
+        if: env.MUTANTS != ''
+        run: |
+          mutmut results | grep -v ': not checked$' > survivors.txt || true
+          {
+            echo '```'
+            cat survivors.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat survivors.txt
+
   formatting:
     name: formatting
     runs-on: ubuntu-latest
@@ -129,7 +193,7 @@ jobs:
         run: python -m pip install --require-hashes -r requirements-ci.txt
 
       - name: Limit function length
-        run: lizard --length 30 --warnings_only strain tests
+        run: lizard --length 30 --warnings_only strain tests fuzz
 
   copy-paste-detection:
     name: copy-paste detection
@@ -144,7 +208,7 @@ jobs:
           node-version: "lts/*"
 
       - name: Detect duplicated code
-        run: npx --yes jscpd@4 --threshold 1 --format python --reporters console --gitignore strain tests
+        run: npx --yes jscpd@4 --threshold 1 --format python --reporters console --gitignore strain tests fuzz
 
   workflow-lint:
     name: workflow lint
