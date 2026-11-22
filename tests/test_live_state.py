@@ -138,6 +138,22 @@ class LiveStateTest(unittest.TestCase):
         self.assertEqual(self.state.elapsed(), 9)
         self.assertIsNone(self.state.remaining_seconds())
 
+    def test_eta_counts_down_from_the_runners_cost_estimate(self) -> None:
+        self.state.start_mutant(0, SOURCE, MUTANT)
+        self.clock.now += 1
+        self.state.finish_mutant(0, MutantState.KILLED)
+        # The second mutant's tests cost far more than the first's, which the average per mutant cannot know.
+        self.state.set_estimate(30.0)
+        self.clock.now += 10
+        self.assertEqual(self.state.remaining_seconds(), 20.0)
+        self.clock.now += 40
+        self.assertEqual(self.state.remaining_seconds(), 0.0)
+
+    def test_a_new_test_forgets_the_estimate_of_the_previous_one(self) -> None:
+        self.state.set_estimate(30.0)
+        self.state.set_test("other_tests", 2, 2)
+        self.assertIsNone(self.state.remaining_seconds())
+
     def test_build_log_counts_every_line_and_keeps_the_latest(self) -> None:
         self.state.start_build("cmake --build build")
         for number in range(3000):

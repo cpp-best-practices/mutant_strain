@@ -97,6 +97,22 @@ SINGLE_TEST_STATES = [
 ]
 
 
+RECOGNISER_HEADER = "[[nodiscard]] bool is_identifier_start(char c);\n"
+RECOGNISER_SOURCE = """#include "sample.hpp"
+
+bool is_identifier_start(char c)
+{
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+"""
+# Weak on purpose: only inputs that must be accepted, none at a limit, none that must be rejected.
+RECOGNISER_TEST = """#include "sample.hpp"
+
+int main() { return is_identifier_start('m') && is_identifier_start('M') && is_identifier_start('_') ? 0 : 1; }
+"""
+OTHER_TESTS_CHECKING_ADD = '#include "sample.hpp"\n\nint main() { return add(1, 1) == 2 ? 0 : 1; }\n'
+
+
 def run_strain(*argv: str) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -282,7 +298,7 @@ class EndToEndTest(unittest.TestCase):
         lines = (self.report_dir / "events.jsonl").read_text().splitlines()
         return [event for event in map(json.loads, lines) if event["event"] == "mutant"]
 
-    def run_per_mutant(self) -> tuple[int, str, str]:
+    def run_per_mutant(self, *argv: str) -> tuple[int, str, str]:
         return run_strain(
             "--build-dir",
             str(self.build_dir),
@@ -292,9 +308,31 @@ class EndToEndTest(unittest.TestCase):
             "lexer",
             "--strategy",
             "per-mutant",
+            *argv,
         )
 
+    def test_cost_order_checks_the_same_mutants_as_source_order_with_the_same_results_cheapest_first(self) -> None:
+        configure_project(self.root, self.build_dir)
+        runs: dict[str, list[dict[str, object]]] = {}
+        for order in ("source", "cost"):
+            with self.subTest(order=order):
+                exit_code, stdout, _ = self.run_per_mutant("--order", order)
+                self.assertEqual(exit_code, 0, stdout)
+                self.assertRegex(stdout, r"id [0-9a-f]+  ETA \d+s\n")
+                runs[order] = self.mutant_events()
+                # The same results; which test kills add varies with the baselines, in either order.
+                self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+        checked = {order: sorted({event["id"] for event in events}) for order, events in runs.items()}
+        self.assertEqual(checked["cost"], checked["source"])
+        self.assertEqual([event["line"] for event in runs["source"]][0], 3)
+        # Both tests cover add, the other mutants only sample_tests, so the mutant of add costs the most.
+        self.assertEqual([event["line"] for event in runs["cost"]][-1], 3)
+        # Every result carries the estimated seconds left; none are left after the last mutant.
+        self.assertTrue(all(isinstance(event["eta"], float) for event in runs["cost"]), runs["cost"])
+        self.assertEqual(runs["cost"][-1]["eta"], 0.0)
+
     def test_per_mutant_strategy_builds_each_mutant_once_and_stops_at_the_first_kill(self) -> None:
+        (self.root / "tests" / "other_tests.cpp").write_text(OTHER_TESTS_CHECKING_ADD)
         configure_project(self.root, self.build_dir)
 
         exit_code, stdout, _ = self.run_per_mutant()
@@ -302,12 +340,34 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(exit_code, 0, stdout)
         self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
         self.assertIn("· src/sample.cpp: 8 mutants on 6 lines", stdout)
-        self.assertIn("[1/8] killed", stdout)
-        self.assertIn("sample_tests   score 40.0%   killed 1  sanitizer 1  timeout 0  survived 3", stdout)
+        # Both tests cover add, so its mutant costs the most and runs last.
+        self.assertIn("[8/8] killed", stdout)
+        # Either test may be the one that kills add, so the per-test lines vary; the combined score doesn't.
+        self.assertIn("src/sample.cpp   40.0%   8 mutants  2 detected  3 survived", stdout)
         self.assertIn("✓ sources restored and rebuilt", stdout)
+        # Both tests kill the mutant of add; whichever runs first is the only one to run.
         add = [event["test"] for event in self.mutant_events() if event["line"] == 3]
-        self.assertEqual(add, ["sample_tests"])
+        self.assertEqual(len(add), 1, add)
         self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+
+    def test_per_mutant_strategy_runs_the_fastest_covering_test_first(self) -> None:
+        (self.root / "tests" / "other_tests.cpp").write_text(OTHER_TESTS_CHECKING_ADD)
+        sample_tests = self.root / "tests" / "sample_tests.cpp"
+        sample_tests.write_text(
+            "#include <chrono>\n#include <thread>\n"
+            + sample_tests.read_text().replace(
+                "int main()\n{\n", "int main()\n{\n  std::this_thread::sleep_for(std::chrono::seconds(1));\n", 1
+            )
+        )
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = self.run_per_mutant()
+
+        self.assertEqual(exit_code, 0, stdout)
+        # sample_tests is selected first, but other_tests is faster and kills the mutant of add on its own.
+        add = [event["test"] for event in self.mutant_events() if event["line"] == 3]
+        self.assertEqual(add, ["other_tests"])
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
 
     def test_per_mutant_strategy_runs_every_covering_test_of_a_survivor(self) -> None:
         (self.root / "tests" / "sample_tests.cpp").write_text(
@@ -319,7 +379,7 @@ class EndToEndTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0, stdout)
         self.assertEqual(self.mutant_states(), [(3, "aor", "-", "survived")])
-        self.assertEqual([event["test"] for event in self.mutant_events()], ["sample_tests", "other_tests"])
+        self.assertEqual(sorted(event["test"] for event in self.mutant_events()), ["other_tests", "sample_tests"])
 
     def test_a_second_run_at_the_same_commit_does_not_rebuild_mutants_known_to_break_the_build(self) -> None:
         configure_project(self.root, self.build_dir)
@@ -545,6 +605,36 @@ class EndToEndTest(unittest.TestCase):
             "the selected tests don't execute them, or they hold nothing to mutate.",
             (self.report_dir / "summary.md").read_text(),
         )
+    def test_survivors_of_weak_tests_group_into_the_patterns_that_name_the_missing_tests(self) -> None:
+        (self.root / "include" / "sample.hpp").write_text(RECOGNISER_HEADER)
+        (self.root / "src" / "sample.cpp").write_text(RECOGNISER_SOURCE)
+        (self.root / "tests" / "sample_tests.cpp").write_text(RECOGNISER_TEST)
+        (self.root / "tests" / "other_tests.cpp").write_text("int main() { return 0; }\n")
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = run_strain(
+            *("--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir)),
+            *("-R", "^sample_tests$", "--engine", "lexer"),
+        )
+
+        self.assertEqual(exit_code, 0, stdout)
+        boundary = "4 survivors move a comparison's limit by one in sample.cpp: add a test exactly at the limit"
+        and_to_or = (
+            "2 survivors turn `&&` into `||` in sample.cpp: add inputs that must be rejected, "
+            "since the tests check only what is accepted"
+        )
+        hotspot = "hotspot: is_identifier_start() in sample.cpp has 6 survivors"
+        self.assertIn(f"▸ Patterns\n  · {boundary}\n  · {and_to_or}\n  · {hotspot}", stdout)
+        summary = (self.report_dir / "summary.md").read_text()
+        self.assertIn(f"### Patterns\n\n- {boundary}\n- {and_to_or}\n- {hotspot}", summary)
+        report = json.loads((self.report_dir / "report.json").read_text())
+        primary = [pattern for pattern in report["patterns"] if pattern["primary"]]
+        self.assertEqual(
+            [(pattern["kind"], pattern["survivors"]) for pattern in primary], [("boundary", 4), ("and-to-or", 2)]
+        )
+        ids = [mutant for pattern in primary for mutant in pattern["mutants"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn("<h2>Patterns</h2>", (self.report_dir / "index.html").read_text())
 
     def test_dirty_working_tree_is_refused(self) -> None:
         configure_project(self.root, self.build_dir)

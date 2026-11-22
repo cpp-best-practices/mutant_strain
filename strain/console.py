@@ -6,6 +6,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from typing import TextIO
 
+from . import NAME
 from .coverage import LineCoverage
 from .mutators import Mutant
 from .results import MutantResult, MutantState
@@ -127,7 +128,7 @@ class Console:
 
     def warn(self, message: str) -> None:
         self.finish()
-        print(f"strain: {paint('warning:', BOLD + YELLOW, self.err_color)} {message}", file=self.err, flush=True)
+        print(f"{NAME}: {paint('warning:', BOLD + YELLOW, self.err_color)} {message}", file=self.err, flush=True)
 
     def run(self, work: Callable[[], int]) -> int:
         """Runs the whole of strain's `work`; the live TUI overrides this to run it beside the TUI."""
@@ -149,6 +150,9 @@ class Console:
     def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
         pass
 
+    def eta_estimated(self, seconds: float | None) -> None:
+        """The seconds the mutants still planned will take, estimated from their cost; the lines show it already."""
+
     def build_started(self, command: str) -> None:
         pass
 
@@ -168,7 +172,7 @@ def create_console(out: TextIO, err: TextIO, mode: UiMode) -> Console:
         return Console(out, err, mode)
     if importlib.util.find_spec("textual") is None:
         console = Console(out, err, UiMode.AUTO)
-        console.warn("--ui live needs Textual: pip install 'strain[ui]'; showing plain output instead")
+        console.warn(f"--ui live needs Textual: pip install '{NAME}[ui]'; showing plain output instead")
         return console
     from .tui import TuiConsole
 

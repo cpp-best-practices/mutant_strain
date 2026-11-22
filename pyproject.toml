@@ -3,20 +3,40 @@ requires = ["setuptools>=84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "strain"
+name = "mutant-strain"
 version = "0.1.0"
 description = "Mutation testing for C++ projects built with CMake and tested with CTest"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Unlicense"
+license-files = ["LICENSE.txt"]
+authors = [{ name = "Jason Turner" }]
+keywords = ["mutation-testing", "testing", "c++", "cmake", "ctest", "coverage"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/cpp-best-practices/mutant_strain"
+Source = "https://github.com/cpp-best-practices/mutant_strain"
+Issues = "https://github.com/cpp-best-practices/mutant_strain/issues"
+
 [project.optional-dependencies]
-tree-sitter = ["tree-sitter>=0.26.0", "tree-sitter-cpp>=0.23.4"]
+tree-sitter = ["tree-sitter>=0.26.1", "tree-sitter-cpp>=0.23.4"]
 ui = ["textual>=8.2.8"]
 ui-snapshot = ["textual>=8.2.8", "pyte>=0.8.2", "pillow>=13.0.0"]
 
 [project.scripts]
-strain = "strain.cli:main"
+mutant_strain = "strain.cli:main"
 
 [tool.setuptools]
 packages = ["strain"]

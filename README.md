@@ -1,3 +1,6 @@
+<img width="320" height="294" alt="mutant_strain-scaled" src="https://github.com/user-attachments/assets/a8a2b402-5f9c-4953-85fb-ae967ec555a2" />
+
+
 # mutant_strain
 
 **Mutation testing for C++ projects built with CMake and tested with CTest.**
@@ -78,8 +81,16 @@ Add `--ui live` (with `strain[ui]` installed) to watch the run in a full-screen 
 
 <!-- TODO(claude): paste a real console summary once one exists -->
 
+With many survivors, start with the **patterns**. They group survivors that make the same kind of change in the same
+file, such as every `&&` → `||` or every comparison moved by one at its limit, and each group names the test that would
+kill all of them. Each survivor is in one group at most. **Hotspots** are the functions with the most survivors.
+
 ```text
 parser_tests   score 87.8%   killed 31  sanitizer 4  timeout 1  survived 5
+
+Patterns
+  · 3 survivors turn `&&` into `||` in lexer.cpp: add inputs that must be rejected, since the tests check only what is accepted
+  · hotspot: parse_header() in parser.cpp has 3 survivors: 1 not_reached, 2 not_detected
 
 Action items
   1. parse_header() is pseudo-tested: nothing checks its result
@@ -182,7 +193,7 @@ strain run --safety-nets=warn
 | `--build-dir` | `.` | CMake build folder |
 | `-R` / `-E` | | Include / exclude tests by regex, as in ctest |
 | `--since <ref>` | | Mutate only lines changed since a git ref |
-| `--strategy` | `per-test` | `per-test` or `per-mutant` |
+| `--strategy` | `per-test` | `per-test`, or `per-mutant`: build each mutant once and run its covering tests, fastest first, until one detects it |
 | `--skip-killed` | off | Skip mutants an earlier test already killed |
 | `--no-build-cache` | off | Don't reuse or save the [build cache](#build-cache) |
 | `--engine` | `auto` | `cppcheck`, `tree-sitter`, `lexer` |
@@ -222,7 +233,8 @@ Written to `strain-report/` <!-- TODO(claude): confirm path -->:
 
 - `index.html`: a browsable report, with each source annotated
 - `summary.md`: the score, the files and the survivors, for a CI job summary or a pull request comment
-- `report.json`: full results, in the mutation-testing-elements schema
+- `report.json`: full results, in the mutation-testing-elements schema, plus a `patterns` array: each group of
+  survivors with its kind, file, advice and mutant IDs, and the hotspots with `"primary": false`
 - `events.jsonl`: every event of the run
 - compiler-style warnings on the console (`file:line:col: warning: survived [ror]`), clickable in editors
 

@@ -8,7 +8,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import FrameType
 
+from . import NAME
 from .console import BOLD, RED, YELLOW, UiMode, paint, wants_color
+from .estimate import Order
 from .mutators import Engine
 from .runner import RunOptions, StrainError, Strategy, run
 from .safety_nets import Level
@@ -35,6 +37,13 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--skip-killed", action="store_true", help="skip mutants an earlier test already killed")
     parser.add_argument(
+        "--order",
+        type=Order,
+        choices=list(Order),
+        default=Order.COST,
+        help="cost (the mutants with the cheapest tests and builds first) or source (by file and offset)",
+    )
+    parser.add_argument(
         "--no-build-cache",
         dest="build_cache",
         action="store_false",
@@ -57,8 +66,8 @@ def _add_backend_arguments(parser: argparse.ArgumentParser) -> None:
         choices=list(UiMode),
         default=UiMode.AUTO,
         help=(
-            "console output: auto (live progress and color on a terminal), live (full-screen TUI; needs strain[ui]), "
-            "log (plain lines) or json (events)"
+            "console output: auto (live progress and color on a terminal), "
+            f"live (full-screen TUI; needs {NAME}[ui]), log (plain lines) or json (events)"
         ),
     )
 
@@ -86,7 +95,7 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="strain", description="Mutation testing for CMake/CTest C++ projects.")
+    parser = argparse.ArgumentParser(prog=NAME, description="Mutation testing for CMake/CTest C++ projects.")
     commands = parser.add_subparsers(dest="command", required=True)
     _add_run_arguments(commands.add_parser("run", help="run mutation testing"))
     return parser
@@ -100,6 +109,7 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         since=arguments.since,
         skip_killed=arguments.skip_killed,
         strategy=arguments.strategy,
+        order=arguments.order,
         build_cache=arguments.build_cache,
         engine=arguments.engine,
         safety_nets=arguments.safety_nets,
@@ -123,11 +133,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return run(options, sys.stdout, sys.stderr)
     except (StrainError, FileNotFoundError, ValueError, subprocess.CalledProcessError) as error:
-        print(f"strain: {paint('error:', BOLD + RED, wants_color(sys.stderr))} {error}", file=sys.stderr)
+        print(f"{NAME}: {paint('error:', BOLD + RED, wants_color(sys.stderr))} {error}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         interrupted = paint("interrupted;", BOLD + YELLOW, wants_color(sys.stderr))
-        print(f"strain: {interrupted} sources restored, continue with --resume", file=sys.stderr)
+        print(f"{NAME}: {interrupted} sources restored, continue with --resume", file=sys.stderr)
         return 130
     finally:
         signal.signal(signal.SIGTERM, previous_handler)

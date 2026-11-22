@@ -5,6 +5,7 @@ from pathlib import Path
 
 from strain.cli import build_parser, options_from_arguments
 from strain.console import UiMode
+from strain.estimate import Order
 from strain.mutators import Engine
 from strain.runner import Strategy
 from strain.safety_nets import Level
@@ -26,6 +27,8 @@ EVERY_OPTION = (
     "--strategy",
     "per-test",
     "--skip-killed",
+    "--order",
+    "source",
     "--engine",
     "lexer",
     "--coverage",
@@ -55,6 +58,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.since, None)
         self.assertFalse(options.skip_killed)
         self.assertIs(options.strategy, Strategy.PER_TEST)
+        self.assertIs(options.order, Order.COST)
         self.assertTrue(options.build_cache)
         self.assertIsNone(options.safety_nets)
         self.assertIsNone(options.threshold)
@@ -71,6 +75,7 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.build_dir, Path("build-strain"))
         self.assertEqual((options.include, options.exclude, options.since), ("parser", "slow", "main"))
         self.assertTrue(options.skip_killed)
+        self.assertIs(options.order, Order.SOURCE)
         self.assertIs(options.engine, Engine.LEXER)
         self.assertIs(options.ui, UiMode.JSON)
         self.assertIs(options.safety_nets, Level.WARN)
