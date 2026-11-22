@@ -699,7 +699,8 @@ class EndToEndTest(unittest.TestCase):
                 self.assertNotIn("not mutated: evaluated at compile time only", stdout)
                 self.assertEqual((self.root / "src" / "sample.cpp").read_text(), COMPILE_TIME_SOURCE)
         # The second run knows both outcomes from the build cache.
-        self.assertIn("static assertion failed, known from the cache", stdout)
+        # Clang adds the failed requirement to the message; GCC does not.
+        self.assertRegex(stdout, r"static assertion failed[^\n]*, known from the cache")
         self.assertIn("rejected by -fsyntax-only, known from the cache", stdout)
 
     def test_dirty_working_tree_is_refused(self) -> None:
