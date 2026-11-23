@@ -78,4 +78,4 @@ ignore_missing_imports = true
 [tool.mutmut]
 source_paths = ["strain/"]
 pytest_add_cli_args_test_selection = ["tests/"]
-also_copy = [".github/", "README.md", "SECURITY.md", "fuzz/", "tests/fixtures/"]
+also_copy = [".github/", "LICENSE.txt", "README.md", "SECURITY.md", "fuzz/", "tests/fixtures/"]
