@@ -11,11 +11,11 @@ Objects that aren't 64-bit ELF, such as Mach-O or COFF ones, get no fingerprint 
 """
 
 import hashlib
+import mmap
 import struct
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
 
 ELF_MAGIC = b"\x7fELF"
 ELFCLASS64 = 2
@@ -25,6 +25,7 @@ SHT_SYMTAB = 2
 SHT_RELA = 4
 SHT_NOBITS = 8
 SHT_REL = 9
+SHF_WRITE = 0x1
 # Sections that describe the code for debuggers and people, not for the machine.
 IGNORED_SECTION_PREFIXES = (".debug", ".zdebug", ".rela.debug", ".rel.debug", ".gnu.debuglto_", ".comment")
 GCOV_MERGE_PREFIX = b"__gcov_merge_"
@@ -38,6 +39,7 @@ GCOV_STAMP_SIZE = 4
 class _Section:
     name: str
     type: int
+    flags: int
     offset: int
     size: int
     link: int
@@ -46,50 +48,70 @@ class _Section:
 
 
 class _Elf:
-    def __init__(self, file: BinaryIO, header: bytes) -> None:
-        self.file = file
-        self.order = "<" if header[5] == ELFDATA2LSB else ">"
-        section_offset = self.unpack("Q", header, 0x28)
-        entry_size, count, names_index = struct.unpack_from(f"{self.order}HHH", header, 0x3A)
-        file.seek(section_offset)
-        table = file.read(entry_size * count)
-        raw = [struct.unpack_from(f"{self.order}IIQQQQIIQQ", table, index * entry_size) for index in range(count)]
-        names = self.read(raw[names_index][4], raw[names_index][5]) if names_index < count else b""
-        self.sections = [
-            _Section(_string(names, name), kind, offset, size, link, info, entsize)
-            for name, kind, _flags, _address, offset, size, link, info, _align, entsize in raw
-        ]
+    """Reads sections straight out of the mapped file, since objects with thousands of sections are common."""
 
-    def unpack(self, kind: str, data: bytes, offset: int) -> int:
+    def __init__(self, data: memoryview) -> None:
+        self.data = data
+        self.order = "<" if data[5] == ELFDATA2LSB else ">"
+        section_offset = self.unpack("Q", data, 0x28)
+        entry_size, count, names_index = struct.unpack_from(f"{self.order}HHH", data, 0x3A)
+        raw = [
+            struct.unpack_from(f"{self.order}IIQQQQIIQQ", data, section_offset + index * entry_size)
+            for index in range(count)
+        ]
+        names = bytes(self.read(raw[names_index][4], raw[names_index][5])) if names_index < count else b""
+        self.sections = [
+            _Section(_string(names, name), kind, flags, offset, size, link, info, entsize)
+            for name, kind, flags, _address, offset, size, link, info, _align, entsize in raw
+        ]
+        self._merge_symbols: dict[int, frozenset[int]] = {}
+
+    def unpack(self, kind: str, data: memoryview, offset: int) -> int:
         return int(struct.unpack_from(f"{self.order}{kind}", data, offset)[0])
 
-    def read(self, offset: int, size: int) -> bytes:
-        self.file.seek(offset)
-        return self.file.read(size)
+    def read(self, offset: int, size: int) -> memoryview:
+        if offset + size > len(self.data):
+            raise ValueError("section past the end of the file")
+        return self.data[offset : offset + size]
 
-    def content(self, section: _Section) -> bytes:
-        return b"" if section.type == SHT_NOBITS else self.read(section.offset, section.size)
+    def content(self, section: _Section) -> memoryview:
+        return self.data[:0] if section.type == SHT_NOBITS else self.read(section.offset, section.size)
 
-    def symbol_names(self, symtab: _Section) -> list[bytes]:
-        data = self.content(symtab)
-        strings = self.content(self.sections[symtab.link]) if symtab.link < len(self.sections) else b""
-        size = symtab.entry_size or 24
-        return [_cstring(strings, self.unpack("I", data, start)) for start in range(0, len(data) - size + 1, size)]
+    def merge_symbols(self, index: int) -> frozenset[int]:
+        """The indices of gcov's merge functions in symbol table `index`, read once however many sections use it."""
+        if index not in self._merge_symbols:
+            symtab = self.sections[index]
+            data = self.content(symtab)
+            strings = bytes(self.content(self.sections[symtab.link])) if symtab.link < len(self.sections) else b""
+            size = symtab.entry_size or 24
+            offsets = struct.iter_unpack(f"{self.order}I{size - 4}x", data[: len(data) - len(data) % size])
+            self._merge_symbols[index] = frozenset(
+                number for number, (offset,) in enumerate(offsets) if strings.startswith(GCOV_MERGE_PREFIX, offset)
+            )
+        return self._merge_symbols[index]
+
+    def relocates_writable_data(self, section: _Section) -> bool:
+        if section.type not in (SHT_RELA, SHT_REL) or section.link >= len(self.sections):
+            return False
+        return section.info < len(self.sections) and bool(self.sections[section.info].flags & SHF_WRITE)
 
     def gcov_stamps(self) -> dict[int, int]:
-        """The offset of the gcov stamp in each section that holds a `struct gcov_info`, keyed by section index."""
+        """The offset of the gcov stamp in each section that holds a `struct gcov_info`, keyed by section index.
+
+        `struct gcov_info` is writable data, so only the relocations of writable sections are read: an object built
+        with -ffunction-sections or many templates has thousands of relocation sections for its code.
+        """
         stamps: dict[int, int] = {}
         for section in self.sections:
-            if section.type not in (SHT_RELA, SHT_REL) or section.link >= len(self.sections):
+            if not self.relocates_writable_data(section):
                 continue
-            names = self.symbol_names(self.sections[section.link])
+            merge_symbols = self.merge_symbols(section.link)
+            if not merge_symbols:
+                continue
             data = self.content(section)
             size = section.entry_size or (24 if section.type == SHT_RELA else 16)
-            merges = [
-                self.unpack("Q", data, start)
-                for start in range(0, len(data) - size + 1, size)
-                if _symbol(names, self.unpack("Q", data, start + 8) >> 32).startswith(GCOV_MERGE_PREFIX)
-            ]
+            entries = struct.iter_unpack(f"{self.order}QQ{size - 16}x", data[: len(data) - len(data) % size])
+            merges = [offset for offset, info in entries if info >> 32 in merge_symbols]
             if merges and min(merges) >= GCOV_STAMP_BEFORE_MERGE:
                 stamps[section.info] = min(merges) - GCOV_STAMP_BEFORE_MERGE
         return stamps
@@ -104,35 +126,35 @@ def _cstring(table: bytes, offset: int) -> bytes:
     return table[offset : len(table) if end < 0 else end]
 
 
-def _symbol(names: list[bytes], index: int) -> bytes:
-    return names[index] if index < len(names) else b""
-
-
-def _masked(content: bytes, stamp: int | None) -> bytes:
+def _masked(content: memoryview, stamp: int | None) -> memoryview | bytes:
     if stamp is None or stamp + GCOV_STAMP_SIZE > len(content):
         return content
-    return content[:stamp] + bytes(GCOV_STAMP_SIZE) + content[stamp + GCOV_STAMP_SIZE :]
+    return bytes(content[:stamp]) + bytes(GCOV_STAMP_SIZE) + bytes(content[stamp + GCOV_STAMP_SIZE :])
+
+
+def _fingerprint(data: memoryview) -> str | None:
+    if len(data) < 64 or bytes(data[:4]) != ELF_MAGIC or data[4] != ELFCLASS64:
+        return None
+    if data[5] not in (ELFDATA2LSB, ELFDATA2MSB):
+        return None
+    elf = _Elf(data)
+    stamps = elf.gcov_stamps()
+    digest = hashlib.sha256()
+    for index, section in enumerate(elf.sections):
+        if section.name.startswith(IGNORED_SECTION_PREFIXES):
+            continue
+        content = _masked(elf.content(section), stamps.get(index))
+        digest.update(f"{section.name}\0{section.type}\0{len(content)}\0".encode())
+        digest.update(content)
+    return digest.hexdigest()
 
 
 def object_fingerprint(path: Path) -> str | None:
     """A hash of the code and data in the object at `path`; None when it is missing or not a 64-bit ELF object."""
     try:
-        with path.open("rb") as file:
-            header = file.read(64)
-            if len(header) < 64 or header[:4] != ELF_MAGIC or header[4] != ELFCLASS64:
-                return None
-            if header[5] not in (ELFDATA2LSB, ELFDATA2MSB):
-                return None
-            elf = _Elf(file, header)
-            stamps = elf.gcov_stamps()
-            digest = hashlib.sha256()
-            for index, section in enumerate(elf.sections):
-                if section.name.startswith(IGNORED_SECTION_PREFIXES):
-                    continue
-                content = _masked(elf.content(section), stamps.get(index))
-                digest.update(f"{section.name}\0{section.type}\0{len(content)}\0".encode())
-                digest.update(content)
-            return digest.hexdigest()
+        with path.open("rb") as file, mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+            with memoryview(mapped) as data:
+                return _fingerprint(data)
     except (OSError, struct.error, IndexError, ValueError):
         return None
 

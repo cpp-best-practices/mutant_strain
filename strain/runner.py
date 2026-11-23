@@ -351,9 +351,13 @@ class Runner:
         if not self.options.equivalence:
             self.console.note("--no-equivalence: every mutant that builds runs its tests")
             return
-        self.objects = ObjectFingerprints.of(self.database.outputs())
+        outputs = self.database.outputs()
+        self.console.status(f"  fingerprinting {plural(len(outputs), 'object file')} to spot equivalent mutants…")
+        start = time.monotonic()
+        self.objects = ObjectFingerprints.of(outputs)
         known = sum(fingerprint is not None for fingerprint in self.objects.originals.values())
-        self.console.step(f"fingerprinted {plural(known, 'object file')} to spot equivalent mutants")
+        seconds = time.monotonic() - start
+        self.console.step(f"fingerprinted {plural(known, 'object file')} to spot equivalent mutants ({seconds:.1f}s)")
 
     def load_build_cache(self) -> None:
         """Loads the mutants earlier runs found to break the build at this commit, with this build configuration."""
@@ -377,12 +381,17 @@ class Runner:
         return engine
 
     def find_test_targets(self) -> dict[str, Target]:
+        self.console.status("  asking CMake which target builds each test…")
+        start = time.monotonic()
         artifacts = target_artifacts(self.build_dir)
-        return {
+        targets = {
             test: artifacts[executable]
             for test, executable in ctest.executables_by_test(self.build_dir).items()
             if executable in artifacts
         }
+        seconds = time.monotonic() - start
+        self.console.step(f"found the targets of {plural(len(targets), 'test')} ({seconds:.1f}s)")
+        return targets
 
     def target_for(self, test: str) -> str | None:
         """The CMake target that builds the program `test` runs; None rebuilds everything."""
@@ -642,12 +651,16 @@ class Runner:
             return Outcome(MutantState.IGNORED, detail=f"ignored in {CONFIG_FILE}")
         return None
 
+    def collect_coverage(self, test: str) -> dict[Path, FileCoverage]:
+        self.console.status(f"  reading the coverage of {test} with gcov…")
+        return self.coverage.collect()
+
     def run_test(self, test: str, events: EventLog) -> list[MutantResult]:
         duration = self.run_baseline(test, events)
         if duration is None:
             return []
         timeout = mutant_timeout(duration)
-        coverage = self.coverage.collect()
+        coverage = self.collect_coverage(test)
         self.verify_coverage_data(test, coverage)
         planned = order_planned(
             self.plan_mutants(self.source_files(coverage, self.test_code(test))), self.options.order, self.build_times
@@ -842,7 +855,7 @@ class Runner:
             duration = self.run_baseline(test, events)
             if duration is None:
                 continue
-            coverage = self.coverage.collect()
+            coverage = self.collect_coverage(test)
             self.verify_coverage_data(test, coverage)
             baselined.append(BaselinedTest(test, duration, self.source_files(coverage, self.test_code(test))))
         return baselined
