@@ -1,9 +1,14 @@
 # What CI installs besides strain, locked with hashes in requirements-ci.txt by
 #   pip-compile --generate-hashes --allow-unsafe --strip-extras requirements-ci.in
+# atheris ships wheels only for Linux and Python 3.12 or later, so only the fuzzing job, which runs there, needs it.
+atheris; sys_platform == "linux" and python_version >= "3.12"
 coverage>=7.17.3
 lizard
+mutmut
+mypy
 pytest
 ruff>=0.17.5
 setuptools>=64
 # The live TUI, so its tests run rather than skip.
 textual>=8.2.8
+zizmor

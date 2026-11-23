@@ -52,7 +52,8 @@ def configure_project(
 
 class RecordingConsole(Console):
     def __init__(self) -> None:
-        super().__init__(io.StringIO(), io.StringIO())
+        self.transcript = io.StringIO()
+        super().__init__(self.transcript, io.StringIO())
         self.evaluated: list[tuple[MutantResult, str, LineCoverage | None]] = []
         self.finished_runs = 0
 
@@ -353,7 +354,7 @@ class EndToEndTest(unittest.TestCase):
                 runs[order] = self.mutant_events()
                 # The same results; which test kills add varies with the baselines, in either order.
                 self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
-        checked = {order: sorted({event["id"] for event in events}) for order, events in runs.items()}
+        checked = {order: sorted({str(event["id"]) for event in events}) for order, events in runs.items()}
         self.assertEqual(checked["cost"], checked["source"])
         self.assertEqual([event["line"] for event in runs["source"]][0], 3)
         # Both tests cover add, the other mutants only sample_tests, so the mutant of add costs the most.
@@ -536,7 +537,7 @@ class EndToEndTest(unittest.TestCase):
                 run(RunOptions(build_dir=self.build_dir, report_dir=self.report_dir), io.StringIO(), io.StringIO())
 
         self.assertFalse(console.took_over)
-        self.assertIn("working tree is clean", console.out.getvalue())
+        self.assertIn("working tree is clean", console.transcript.getvalue())
 
     def test_release_build_is_refused_because_ndebug_removes_assertions(self) -> None:
         configure_project(self.root, self.build_dir, build_type="Release")
@@ -598,6 +599,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertTrue(survivors)
         self.assertTrue(all(source.startswith('#include "sample.hpp"') for _, source, _ in console.evaluated))
         clamp = next(line for result, line in survivors if result.mutant.line == 7)
+        assert clamp is not None
         self.assertEqual(clamp.count, 1)
         self.assertEqual(console.finished_runs, 1)
 
@@ -620,7 +622,7 @@ class EndToEndTest(unittest.TestCase):
         events = [json.loads(line) for line in (self.report_dir / "events.jsonl").read_text().splitlines()]
         self.assertEqual(events[-1]["event"], "interrupted")
         self.assertEqual(events[-1]["score"], 1 / 3)
-        transcript = console.out.getvalue()
+        transcript = console.transcript.getvalue()
         self.assertIn("▸ Survivors (2)", transcript)
         self.assertIn("mutation score 33.3%", transcript)
         self.assertIn("interrupted after", transcript)

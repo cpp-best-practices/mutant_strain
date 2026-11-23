@@ -54,6 +54,9 @@ def _add_scheduling_arguments(parser: argparse.ArgumentParser) -> None:
         default=Order.COST,
         help="cost (the mutants with the cheapest tests and builds first) or source (by file and offset)",
     )
+
+
+def _add_mutant_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--compile-time",
         action="store_true",
@@ -106,6 +109,7 @@ def _add_report_arguments(parser: argparse.ArgumentParser) -> None:
 def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     _add_selection_arguments(parser)
     _add_scheduling_arguments(parser)
+    _add_mutant_arguments(parser)
     _add_backend_arguments(parser)
     _add_policy_arguments(parser)
     _add_report_arguments(parser)

@@ -34,9 +34,9 @@ def killed(mutant: Mutant, test: str = "other_tests") -> MutantResult:
 
 
 def text_of(renderable: object, width: int = 120) -> str:
-    console = RichConsole(width=width, file=io.StringIO(), color_system=None)
-    console.print(renderable)
-    return console.file.getvalue()  # type: ignore[attr-defined]
+    out = io.StringIO()
+    RichConsole(width=width, file=out, color_system=None).print(renderable)
+    return out.getvalue()
 
 
 def make_console() -> "TuiConsole":
@@ -168,7 +168,8 @@ class StrainAppTest(unittest.IsolatedAsyncioTestCase):
             tabs = self.app.query_one(TabbedContent)
             await pilot.press("5")
             await pilot.pause()
-            tabs.post_message(TabbedContent.TabActivated(tabs, tabs.get_tab("stats")))
+            # get_tab is annotated as returning a Tab, though in a TabbedContent it is the ContentTab the message wants.
+            tabs.post_message(TabbedContent.TabActivated(tabs, tabs.get_tab("stats")))  # type: ignore[arg-type]
             await pilot.pause()
             self.assertEqual(tabs.active, "log")
             self.assertIs(self.app.focused, self.app.query_one("#transcript"))
@@ -237,7 +238,7 @@ class StrainAppTest(unittest.IsolatedAsyncioTestCase):
             self.console.start_worker()
             await pilot.press("ctrl+c")
             self.assertTrue(self.console.stop_requested.is_set())
-            self.assertTrue(self.console.live.stopping)
+            self.assertTrue(self.console.live_state.stopping)
 
     async def test_finishing_the_run_opens_with_every_mutant_once(self) -> None:
         async with self.app.run_test(size=SIZE) as pilot:
@@ -297,11 +298,11 @@ class TuiConsoleTest(unittest.TestCase):
         runner.start()
         runner.join(0.3)
         self.assertTrue(runner.is_alive())
-        self.assertTrue(console.live.waiting)
+        self.assertTrue(console.live_state.waiting)
         console.set_paused(False)
         runner.join(2)
         self.assertFalse(runner.is_alive())
-        self.assertEqual(console.live.current, 0)
+        self.assertEqual(console.live_state.current, 0)
 
     def test_run_returns_what_the_work_returns_and_replays_the_transcript(self) -> None:
         out, err = io.StringIO(), io.StringIO()

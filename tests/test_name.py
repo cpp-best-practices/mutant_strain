@@ -5,6 +5,7 @@ import re
 import tomllib
 import unittest
 from pathlib import Path
+from typing import Any
 
 from strain import NAME
 from strain.cli import build_parser
@@ -18,7 +19,11 @@ OLD_NAME = re.compile(r"(?<![-./\w])strain\b(?![-.]\w)")
 
 def docstrings(tree: ast.Module) -> set[int]:
     nodes = [tree, *(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.ClassDef))]
-    return {id(node.body[0].value) for node in nodes if ast.get_docstring(node) is not None}
+    return {
+        id(statement.value)
+        for node in nodes
+        if ast.get_docstring(node) is not None and isinstance(statement := node.body[0], ast.Expr)
+    }
 
 
 def messages(source: Path) -> list[tuple[int, str]]:
@@ -36,7 +41,7 @@ def normalized(distribution: str) -> str:
     return re.sub(r"[-_.]+", "-", distribution).lower()
 
 
-def pyproject() -> dict:
+def pyproject() -> dict[str, Any]:
     return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 

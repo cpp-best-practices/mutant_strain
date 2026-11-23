@@ -22,6 +22,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.coordinate import Coordinate
 from textual.widget import Widget
 from textual.widgets import DataTable, Footer, RichLog, Static, Tab, TabbedContent, TabPane, Tabs
 
@@ -63,7 +64,7 @@ HIGH_SCORE = 80.0
 LOW_SCORE = 60.0
 WORKER_POLL_SECONDS = 0.1
 EQUIVALENT_HINT = f"equivalent? list it under [ignore] mutants in {CONFIG_FILE}"
-STATE_GLYPHS = {
+STATE_GLYPHS: dict[str, str] = {
     MutantState.KILLED: "✔",
     MutantState.KILLED_BY_SANITIZER: "✔",
     MutantState.KILLED_AT_COMPILE_TIME: "✔",
@@ -75,7 +76,7 @@ STATE_GLYPHS = {
     RUNNING: "▶",
     PENDING: "·",
 }
-STATE_STYLES = {
+STATE_STYLES: dict[str, str] = {
     MutantState.KILLED: "green",
     MutantState.KILLED_BY_SANITIZER: "green",
     MutantState.KILLED_AT_COMPILE_TIME: "green",
@@ -88,7 +89,7 @@ STATE_STYLES = {
     PENDING: "dim",
 }
 # Narrow lists use these labels; the details give the full state.
-SHORT_STATES = {
+SHORT_STATES: dict[str, str] = {
     MutantState.KILLED_BY_SANITIZER: "sanitizer",
     MutantState.KILLED_AT_COMPILE_TIME: "constexpr",
     MutantState.COMPILE_ERROR: "no build",
@@ -175,7 +176,7 @@ def location(mutant: Mutant, short: bool = False) -> str:
     return f"{file}:{mutant.line}:{mutant.column}"
 
 
-def table(table_id: str, classes: str = "panel") -> DataTable:
+def table(table_id: str, classes: str = "panel") -> DataTable[RenderableType]:
     """A row-selecting table whose cells keep their own colors on the cursor row."""
     return DataTable(
         id=table_id, classes=classes, cursor_type="row", zebra_stripes=True, cursor_foreground_priority="renderable"
@@ -202,7 +203,7 @@ def map_category(state: str) -> str:
 def highlighted_lines(source: str) -> list[Text]:
     """`source` with C++ syntax highlighting, one Text per line, tabs expanded."""
     syntax = Syntax("", "cpp", theme=SYNTAX_THEME, background_color="default")
-    return syntax.highlight(source.expandtabs(TAB_WIDTH)).split("\n", allow_blank=True)
+    return list(syntax.highlight(source.expandtabs(TAB_WIDTH)).split("\n", allow_blank=True))
 
 
 def diff_view(source: str, mutant: Mutant, context: int) -> Text:
@@ -529,7 +530,7 @@ class StrainApp(App[None]):
     def __init__(self, console: "TuiConsole") -> None:
         super().__init__()
         self.runner_console = console
-        self.state = console.live
+        self.state = console.live_state
         self.following = True
         self.seen_version = -1
         self.seen_results = -1
@@ -765,14 +766,14 @@ class StrainApp(App[None]):
 
     def fill_browser(
         self,
-        table: DataTable,
+        table: DataTable[RenderableType],
         entries: list[CombinedResult],
         cells: Callable[[CombinedResult], tuple[RenderableType, ...]],
     ) -> None:
         """Refills `table` with `entries`, keeping the cursor on the same mutant."""
         selected = None
         if table.row_count and 0 <= table.cursor_row < table.row_count:
-            selected = table.coordinate_to_cell_key((table.cursor_row, 0)).row_key.value
+            selected = table.coordinate_to_cell_key(Coordinate(table.cursor_row, 0)).row_key.value
         table.clear()
         for entry in entries:
             table.add_row(*cells(entry), key=entry.mutant.id)
@@ -805,7 +806,7 @@ class StrainApp(App[None]):
                 Text(str(row.survived), style="bold red" if row.survived else "dim", justify="right"),
             )
 
-    def fill_file_scores(self, files: DataTable) -> None:
+    def fill_file_scores(self, files: DataTable[RenderableType]) -> None:
         files.clear()
         for row in self.state.file_scores():
             files.add_row(*self.tally_row(Tally(row.file, row.mutants, row.detected, row.survived)))
@@ -1047,7 +1048,7 @@ class TuiConsole(Console):
 
     def __init__(self, out: TextIO, err: TextIO, headless: bool = False) -> None:
         super().__init__(out, err, UiMode.LIVE)
-        self.live = LiveState()
+        self.live_state = LiveState()
         self.headless = headless
         self.active = True
         self.paused = False
@@ -1114,13 +1115,13 @@ class TuiConsole(Console):
         return self.worker_finished() and self.worker_error is not None
 
     def request_stop(self) -> None:
-        self.live.set_flag("stopping", True)
+        self.live_state.set_flag("stopping", True)
         self.stop_requested.set()
         self.resume.set()
 
     def set_paused(self, paused: bool) -> None:
         self.paused = paused
-        self.live.set_flag("paused", paused)
+        self.live_state.set_flag("paused", paused)
         if paused:
             self.resume.clear()
         else:
@@ -1140,19 +1141,19 @@ class TuiConsole(Console):
             return
         self.check_stop()
         self.transcript.append(text)
-        self.live.add_line(text)
+        self.live_state.add_line(text)
 
     def status(self, text: str) -> None:
         if self.active:
             self.check_stop()
-            self.live.set_status(text)
+            self.live_state.set_status(text)
 
     def warn(self, message: str) -> None:
         if not self.active:
             super().warn(message)
             return
         self.warnings.append(message)
-        self.live.add_line(f"warning: {message}")
+        self.live_state.add_line(f"warning: {message}")
 
     def finish(self) -> None:
         # Taken before printing: Console.warn calls finish() again.
@@ -1169,41 +1170,41 @@ class TuiConsole(Console):
 
     def test_started(self, name: str, number: int, total: int) -> None:
         self.check_stop()
-        self.live.set_test(name, number, total)
+        self.live_state.set_test(name, number, total)
 
     def plan(self, mutants: Sequence[Mutant]) -> None:
-        self.live.plan(mutants)
+        self.live_state.plan(mutants)
 
     def mutant_started(self, index: int, source: str, mutant: Mutant) -> None:
         self.check_stop()
         if not self.resume.is_set():
-            self.live.set_flag("waiting", True)
+            self.live_state.set_flag("waiting", True)
             while not self.resume.wait(WORKER_POLL_SECONDS):
                 pass
-            self.live.set_flag("waiting", False)
+            self.live_state.set_flag("waiting", False)
             self.check_stop()
-        self.live.start_mutant(index, source, mutant)
+        self.live_state.start_mutant(index, source, mutant)
 
     def mutant_finished(self, index: int, state: str) -> None:
-        self.live.finish_mutant(index, state)
+        self.live_state.finish_mutant(index, state)
 
     def mutant_evaluated(self, result: MutantResult, source: str, line: LineCoverage | None) -> None:
-        self.live.record_result(result, source, line)
+        self.live_state.record_result(result, source, line)
 
     def eta_estimated(self, seconds: float | None) -> None:
-        self.live.set_estimate(seconds)
+        self.live_state.set_estimate(seconds)
 
     def safety_nets_checked(self, relaxed: Sequence[RelaxedSafetyNet], holding: Sequence[SafetyNet]) -> None:
-        self.live.set_safety_nets(relaxed, holding)
+        self.live_state.set_safety_nets(relaxed, holding)
 
     def build_started(self, command: str) -> None:
         self.check_stop()
-        self.live.start_build(command)
+        self.live_state.start_build(command)
 
     def build_output(self, line: str) -> None:
         self.check_stop()
-        self.live.build_output(line)
+        self.live_state.build_output(line)
 
     def run_finished(self) -> None:
         self.set_paused(False)
-        self.live.finish_run()
+        self.live_state.finish_run()
