@@ -44,8 +44,8 @@ class ResumeTest(unittest.TestCase):
         self.runner.run_covering_tests = mock.Mock(side_effect=self.run_tests)  # type: ignore[method-assign]
         source = mock.sentinel.source
         self.entry = CoveredMutant(
-            PlannedMutant(source, frozenset(), MUTANT),  # type: ignore[arg-type]
-            [CoveringTest(name, 0.1, source) for name in ("fast", "middle", "slow")],  # type: ignore[arg-type]
+            PlannedMutant(source, frozenset(), MUTANT),
+            [CoveringTest(name, 0.1, source) for name in ("fast", "middle", "slow")],
         )
 
     @staticmethod
@@ -80,13 +80,13 @@ class ParallelTestsTest(unittest.TestCase):
         self.runner.build_dir = Path("build")
         self.runner.console = mock.Mock()
         self.runner.known_build_failure = lambda planned: None  # type: ignore[method-assign]
-        self.runner.mutated = lambda planned: nullcontext()  # type: ignore[method-assign]
+        self.runner.mutated = lambda planned: nullcontext()  # type: ignore[method-assign, assignment, return-value]
         self.runner.build_mutant = lambda planned, targets, label: None  # type: ignore[method-assign]
         self.runner.targets_for = lambda tests: [None]  # type: ignore[method-assign]
         source = mock.Mock()
         source.coverage.lines = {}
         self.entry = covered(MUTANT, 0.1, 0.2, 0.3, 0.4)
-        self.entry.tests = [CoveringTest(test.name, test.duration, source) for test in self.entry.tests]  # type: ignore[arg-type]
+        self.entry.tests = [CoveringTest(test.name, test.duration, source) for test in self.entry.tests]
         self.both_running = threading.Barrier(2, timeout=5)
         self.ran: list[str] = []
 
@@ -128,8 +128,8 @@ class ParallelTestsTest(unittest.TestCase):
 def covered(mutant: Mutant, *durations: float) -> CoveredMutant:
     source = mock.sentinel.source
     return CoveredMutant(
-        PlannedMutant(source, frozenset(), mutant),  # type: ignore[arg-type]
-        [CoveringTest(f"test{number}", duration, source) for number, duration in enumerate(durations)],  # type: ignore[arg-type]
+        PlannedMutant(source, frozenset(), mutant),
+        [CoveringTest(f"test{number}", duration, source) for number, duration in enumerate(durations)],
     )
 
 

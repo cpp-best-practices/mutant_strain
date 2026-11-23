@@ -31,6 +31,11 @@ def build(kind: str, out: Path) -> Path:
 
 
 class WheelTest(unittest.TestCase):
+    tmp: tempfile.TemporaryDirectory[str]
+    names: list[str]
+    metadata: Message
+    entry_points: str
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.tmp = tempfile.TemporaryDirectory()
@@ -38,7 +43,7 @@ class WheelTest(unittest.TestCase):
         with zipfile.ZipFile(wheel) as archive:
             cls.names = archive.namelist()
             info = next(name for name in cls.names if name.endswith(".dist-info/METADATA"))
-            cls.metadata: Message = email.message_from_bytes(archive.read(info))
+            cls.metadata = email.message_from_bytes(archive.read(info))
             points = next(name for name in cls.names if name.endswith(".dist-info/entry_points.txt"))
             cls.entry_points = archive.read(points).decode("utf-8")
 
