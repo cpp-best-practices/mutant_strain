@@ -94,6 +94,17 @@ class RunOptionsTest(unittest.TestCase):
             with self.subTest(engine=engine):
                 self.assertIs(parse("--engine", str(engine)).engine, engine)
 
+    def test_tests_run_one_at_a_time_by_default(self) -> None:
+        self.assertEqual(parse().jobs, 1)
+
+    def test_jobs_runs_the_covering_tests_of_a_mutant_in_parallel(self) -> None:
+        self.assertEqual(parse("--strategy", "per-mutant", "-j", "4").jobs, 4)
+        self.assertEqual(parse("--jobs", "2").jobs, 2)
+
+    def test_jobs_must_be_positive(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse("--jobs", "0")
+
     def test_no_build_cache(self) -> None:
         self.assertFalse(parse("--no-build-cache").build_cache)
 

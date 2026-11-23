@@ -412,6 +412,28 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(self.mutant_states(), [(3, "aor", "-", "survived")])
         self.assertEqual(sorted(event["test"] for event in self.mutant_events()), ["other_tests", "sample_tests"])
 
+    def test_jobs_runs_the_covering_tests_of_a_mutant_together_with_the_same_results(self) -> None:
+        (self.root / "tests" / "other_tests.cpp").write_text(OTHER_TESTS_CHECKING_ADD)
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = self.run_per_mutant("--jobs", "2")
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertIn("--jobs 2: up to 2 covering tests of each mutant run at a time", stdout)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+        # Both tests covering add ran together, and both kill its mutant.
+        add = sorted((event["test"], event["state"]) for event in self.mutant_events() if event["line"] == 3)
+        self.assertEqual(add, [("other_tests", "killed"), ("sample_tests", "killed")])
+        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+
+    def test_jobs_needs_the_per_mutant_strategy(self) -> None:
+        configure_project(self.root, self.build_dir)
+
+        exit_code, _, stderr = run_strain("--build-dir", str(self.build_dir), "--jobs", "2")
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("it needs --strategy per-mutant", stderr)
+
     def test_a_second_run_at_the_same_commit_does_not_rebuild_mutants_known_to_break_the_build(self) -> None:
         configure_project(self.root, self.build_dir)
         _, first, _ = self.run_sample_tests("lexer")

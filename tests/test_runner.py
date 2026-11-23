@@ -1,12 +1,26 @@
 import os
+import threading
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
 from strain.estimate import BuildTimes, Order
 from strain.mutators import Mutant
 from strain.results import MutantState, SurvivorKind
-from strain.runner import CoveredMutant, CoveringTest, Outcome, PlannedMutant, Runner, order_mutants, short_path
+from strain.ctest import RunResult
+from strain.runner import (
+    CoveredMutant,
+    CoveringTest,
+    Outcome,
+    PlannedMutant,
+    Runner,
+    RunOptions,
+    Strategy,
+    StrainError,
+    order_mutants,
+    short_path,
+)
 
 MUTANT = Mutant("src/a.cpp", 3, 11, 40, "ror", "<", "<=")
 
@@ -55,6 +69,60 @@ class ResumeTest(unittest.TestCase):
         self.recorded["middle"] = Outcome(MutantState.KILLED)
         self.assertEqual(self.outcomes(), [("middle", MutantState.KILLED)])
         self.runner.run_covering_tests.assert_not_called()  # type: ignore[attr-defined]
+
+
+class ParallelTestsTest(unittest.TestCase):
+    """With --jobs N, the covering tests of a mutant run N at a time, and the run stops after the batch that kills it."""
+
+    def setUp(self) -> None:
+        self.runner = object.__new__(Runner)
+        self.runner.options = RunOptions(strategy=Strategy.PER_MUTANT, jobs=2)
+        self.runner.build_dir = Path("build")
+        self.runner.console = mock.Mock()
+        self.runner.known_build_failure = lambda planned: None  # type: ignore[method-assign]
+        self.runner.mutated = lambda planned: nullcontext()  # type: ignore[method-assign]
+        self.runner.build_mutant = lambda planned, targets, label: None  # type: ignore[method-assign]
+        self.runner.targets_for = lambda tests: [None]  # type: ignore[method-assign]
+        source = mock.Mock()
+        source.coverage.lines = {}
+        self.entry = covered(MUTANT, 0.1, 0.2, 0.3, 0.4)
+        self.entry.tests = [CoveringTest(test.name, test.duration, source) for test in self.entry.tests]  # type: ignore[arg-type]
+        self.both_running = threading.Barrier(2, timeout=5)
+        self.ran: list[str] = []
+
+    def run_test(self, build_dir: Path, name: str, timeout: float) -> RunResult:
+        self.ran.append(name)
+        if name in ("test0", "test1"):
+            # Fails with BrokenBarrierError unless the other test of the batch runs at the same time.
+            self.both_running.wait()
+        returncode = 1 if name == "test3" else 0
+        return RunResult(returncode=returncode, output="", duration=0.1, timed_out=False)
+
+    def outcomes(self) -> list[tuple[str, MutantState]]:
+        with mock.patch("strain.ctest.run_test", side_effect=self.run_test):
+            outcomes = self.runner.run_covering_tests(self.entry, self.entry.tests, "")
+        return [(test.name, outcome.state) for test, outcome in outcomes]
+
+    def test_the_tests_of_a_batch_run_at_the_same_time_and_report_in_order(self) -> None:
+        self.assertEqual(
+            self.outcomes(),
+            [
+                ("test0", MutantState.SURVIVED),
+                ("test1", MutantState.SURVIVED),
+                ("test2", MutantState.SURVIVED),
+                ("test3", MutantState.KILLED),
+            ],
+        )
+
+    def test_no_batch_starts_after_the_one_that_kills_the_mutant(self) -> None:
+        self.entry.tests = [self.entry.tests[2], self.entry.tests[3], *self.entry.tests[:2]]
+        self.assertEqual(self.outcomes(), [("test2", MutantState.SURVIVED), ("test3", MutantState.KILLED)])
+        self.assertEqual(sorted(self.ran), ["test2", "test3"])
+
+    def test_jobs_needs_the_per_mutant_strategy(self) -> None:
+        self.runner.options = RunOptions(strategy=Strategy.PER_TEST, jobs=2)
+        with self.assertRaisesRegex(StrainError, "--strategy per-mutant"):
+            self.runner.check_jobs()
 
 
 def covered(mutant: Mutant, *durations: float) -> CoveredMutant:

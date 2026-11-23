@@ -6,6 +6,7 @@ import os
 import shlex
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -121,6 +122,7 @@ class RunOptions:
     show_all: bool = False
     ui: UiMode = UiMode.AUTO
     report_dir: Path = Path("strain-report")
+    jobs: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +219,11 @@ class Outcome:
     detail: str = ""
 
 
+def batches(tests: Sequence[CoveringTest], size: int) -> Iterator[Sequence[CoveringTest]]:
+    for start in range(0, len(tests), size):
+        yield tests[start : start + size]
+
+
 def survivor_kind(coverage: FileCoverage, line: int) -> SurvivorKind | None:
     line_coverage = coverage.lines.get(line)
     if line_coverage is None or line_coverage.branches == 0:
@@ -264,6 +271,17 @@ class Runner:
         console.field("build", str(self.build_dir), 7)
         console.field("reports", str(self.options.report_dir), 7)
 
+    def check_jobs(self) -> None:
+        """Only the tests of one mutant can share its build, so --jobs needs the strategy that runs them together."""
+        jobs = self.options.jobs
+        if jobs == 1:
+            return
+        if self.options.strategy is not Strategy.PER_MUTANT:
+            raise StrainError(
+                f"--jobs {jobs} runs the covering tests of a mutant together; it needs --strategy per-mutant"
+            )
+        self.console.step(f"--jobs {jobs}: up to {jobs} covering tests of each mutant run at a time")
+
     def build(self, target: str | None = None) -> bool:
         self.console.build_started(shlex.join(build_command(Path(short_path(self.build_dir)), target, self.build_jobs)))
         self.build_output = []
@@ -300,6 +318,7 @@ class Runner:
         self.check_prerequisites(commands)
         self.check_safety_nets(commands)
         self.check_generator()
+        self.check_jobs()
         self.engine = self.resolve_engine()
         self.checked = True
 
@@ -559,7 +578,10 @@ class Runner:
 
     def run_mutated(self, test: str, timeout: float, coverage: FileCoverage, line: int, label: str) -> Outcome:
         self.console.status(f"{label}  running {test}…")
-        run = ctest.run_test(self.build_dir, test, timeout)
+        return self.classify(ctest.run_test(self.build_dir, test, timeout), coverage, line)
+
+    @staticmethod
+    def classify(run: ctest.RunResult, coverage: FileCoverage, line: int) -> Outcome:
         state = classify_run(run)
         survivor = survivor_kind(coverage, line) if state is MutantState.SURVIVED else None
         return Outcome(
@@ -891,13 +913,28 @@ class Runner:
             problem = self.build_mutant(planned, self.targets_for([test.name for test in tests]), label)
             if problem is not None:
                 return [(test, problem) for test in tests]
-            outcomes: list[tuple[CoveringTest, Outcome]] = []
-            for test in tests:
-                outcome = self.run_mutated(test.name, test.timeout, test.source.coverage, planned.mutant.line, label)
-                outcomes.append((test, outcome))
-                if outcome.state in DETECTED_STATES:
-                    break
-            return outcomes
+            return self.run_until_detected(planned, tests, label)
+
+    def run_until_detected(
+        self, planned: PlannedMutant, tests: Sequence[CoveringTest], label: str
+    ) -> list[tuple[CoveringTest, Outcome]]:
+        """Runs `tests` on the built mutant, `--jobs` at a time, until a batch detects it."""
+        line = planned.mutant.line
+        outcomes: list[tuple[CoveringTest, Outcome]] = []
+        for batch in batches(tests, self.options.jobs):
+            self.console.status(f"{label}  running {', '.join(test.name for test in batch)}…")
+            runs = self.run_batch(batch)
+            outcomes += [(test, self.classify(run, test.source.coverage, line)) for test, run in zip(batch, runs)]
+            if any(outcome.state in DETECTED_STATES for _, outcome in outcomes):
+                break
+        return outcomes
+
+    def run_batch(self, batch: Sequence[CoveringTest]) -> list[ctest.RunResult]:
+        """Runs a lone test on this thread, so Ctrl-C and SIGTERM stop its CTest at once, and a batch in parallel."""
+        if len(batch) == 1:
+            return [ctest.run_test(self.build_dir, batch[0].name, batch[0].timeout)]
+        with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+            return list(pool.map(lambda test: ctest.run_test(self.build_dir, test.name, test.timeout), batch))
 
     def covered_outcomes(
         self, entry: CoveredMutant, events: EventLog, label: str
