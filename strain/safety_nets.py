@@ -54,8 +54,8 @@ EXPLANATIONS: dict[SafetyNet, str] = {
     ),
     SafetyNet.UNITY_BUILD: (
         "configure with -DCMAKE_UNITY_BUILD=OFF: a unity build compiles merged unity_*.cxx files instead of your "
-        "sources, so the -fsyntax-only pre-check cannot find the command for a mutated file and every mutant "
-        "rebuilds a whole batch of files"
+        "sources, so the object of a mutated file cannot be compared with the original's to spot equivalent "
+        "mutants, and every mutant rebuilds a whole batch of files"
     ),
     SafetyNet.LTO: (
         "remove -flto and configure with -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF: link-time optimization reruns the "

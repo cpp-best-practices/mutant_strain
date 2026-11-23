@@ -56,10 +56,12 @@ class RunOptionsTest(unittest.TestCase):
         self.assertEqual(options.include, None)
         self.assertEqual(options.exclude, None)
         self.assertEqual(options.since, None)
-        self.assertFalse(options.skip_killed)
-        self.assertIs(options.strategy, Strategy.PER_TEST)
+        self.assertTrue(options.skip_killed)
+        self.assertIs(options.strategy, Strategy.PER_MUTANT)
         self.assertIs(options.order, Order.COST)
         self.assertTrue(options.build_cache)
+        self.assertTrue(options.direct_build)
+        self.assertTrue(options.equivalence)
         self.assertIsNone(options.safety_nets)
         self.assertIsNone(options.threshold)
         self.assertFalse(options.strict)
@@ -96,6 +98,11 @@ class RunOptionsTest(unittest.TestCase):
 
     def test_no_build_cache(self) -> None:
         self.assertFalse(parse("--no-build-cache").build_cache)
+
+    def test_the_faster_defaults_can_be_turned_off(self) -> None:
+        self.assertFalse(parse("--no-skip-killed").skip_killed)
+        self.assertFalse(parse("--no-direct-build").direct_build)
+        self.assertFalse(parse("--no-equivalence").equivalence)
 
     def test_every_strategy_from_the_readme(self) -> None:
         for strategy in Strategy:

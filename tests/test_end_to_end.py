@@ -26,7 +26,12 @@ def run_checked(*command: str | Path, cwd: Path) -> None:
 
 
 def configure_project(
-    root: Path, build_dir: Path, cxx_flags: str = CXX_FLAGS, build_type: str = "Debug", linker_flags: str = LINKER_FLAGS
+    root: Path,
+    build_dir: Path,
+    cxx_flags: str = CXX_FLAGS,
+    build_type: str = "Debug",
+    linker_flags: str = LINKER_FLAGS,
+    generator: str | None = None,
 ) -> None:
     run_checked("git", "init", "-q", cwd=root)
     run_checked("git", "add", ".", cwd=root)
@@ -43,6 +48,7 @@ def configure_project(
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         f"-DCMAKE_CXX_FLAGS={cxx_flags}",
         f"-DCMAKE_EXE_LINKER_FLAGS={linker_flags}",
+        *(() if generator is None else ("-G", generator)),
         cwd=root,
     )
     run_checked("cmake", "--build", build_dir, cwd=root)
@@ -111,6 +117,10 @@ RECOGNISER_TEST = """#include "sample.hpp"
 int main() { return is_identifier_start('m') && is_identifier_start('M') && is_identifier_start('_') ? 0 : 1; }
 """
 OTHER_TESTS_CHECKING_ADD = '#include "sample.hpp"\n\nint main() { return add(1, 1) == 2 ? 0 : 1; }\n'
+# `value - 0` compiles to the same code as `value + 0`, so no test can tell the mutant from the original.
+EQUIVALENT_SOURCE = "\nint plus_zero(int value) { return value + 0; }\n"
+EQUIVALENT_DECLARATION = "[[nodiscard]] int plus_zero(int value);\n"
+EQUIVALENT_CHECK = "  if (plus_zero(1) != 1) { return 1; }\n"
 
 
 def run_strain(*argv: str) -> tuple[int, str, str]:
@@ -162,6 +172,8 @@ class EndToEndTest(unittest.TestCase):
             "50",
             "--engine",
             "lexer",
+            "--strategy",
+            "per-test",
         )
 
         self.assertEqual(exit_code, 1, stdout)
@@ -178,7 +190,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("✓ baseline passed in", stdout)
         self.assertIn("· src/sample.cpp: 8 mutants on 6 lines", stdout)
         self.assertIn("[2/8] survived", stdout)
-        self.assertIn("rejected by -fsyntax-only", stdout)
+        self.assertIn("compile_error       src/sample.cpp:17:7 [aor] `*` → `/`  build failed", stdout)
         self.assertIn("✓ sources restored and rebuilt", stdout)
         self.assertIn("mutation score 40.0%   ✗ below --threshold 50%", stdout)
         self.assertIn("clamp_to_zero() is pseudo-tested: nothing checks its result", stdout)
@@ -391,7 +403,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("✓ build cache: 0 mutants known to break the build at this commit", first)
         self.assertNotIn("known from the cache", first)
         self.assertIn("✓ build cache: 2 mutants known to break the build at this commit", second)
-        self.assertEqual(second.count("rejected by -fsyntax-only, known from the cache"), 2)
+        self.assertEqual(second.count("build failed, known from the cache"), 2)
         self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
         self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
 
@@ -402,7 +414,7 @@ class EndToEndTest(unittest.TestCase):
         exit_code, stdout, _ = self.run_per_mutant()
 
         self.assertEqual(exit_code, 0, stdout)
-        self.assertEqual(stdout.count("rejected by -fsyntax-only, known from the cache"), 2)
+        self.assertEqual(stdout.count("build failed, known from the cache"), 2)
 
     def test_a_new_commit_starts_an_empty_build_cache(self) -> None:
         configure_project(self.root, self.build_dir)
@@ -605,6 +617,79 @@ class EndToEndTest(unittest.TestCase):
             "the selected tests don't execute them, or they hold nothing to mutate.",
             (self.report_dir / "summary.md").read_text(),
         )
+
+    def add_an_equivalent_mutant(self) -> None:
+        header = self.root / "include" / "sample.hpp"
+        header.write_text(header.read_text().replace("\n#endif", EQUIVALENT_DECLARATION + "\n#endif"))
+        source = self.root / "src" / "sample.cpp"
+        source.write_text(source.read_text() + EQUIVALENT_SOURCE)
+        sample_tests = self.root / "tests" / "sample_tests.cpp"
+        sample_tests.write_text(sample_tests.read_text().replace("  return 0;\n", EQUIVALENT_CHECK + "  return 0;\n"))
+        configure_project(self.root, self.build_dir)
+
+    def equivalent_state(self) -> str:
+        [state] = [state for line, _, _, state in self.mutant_states() if line == 22]
+        return state
+
+    def test_a_mutant_that_compiles_to_the_original_code_is_equivalent_and_runs_no_test(self) -> None:
+        self.add_an_equivalent_mutant()
+
+        exit_code, stdout, _ = self.run_sample_tests("lexer")
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertEqual(self.equivalent_state(), "equivalent")
+        self.assertIn(
+            "equivalent          src/sample.cpp:22:41 [aor] `+` → `-`  sample_tests: compiles to the same code", stdout
+        )
+        # The other mutants of the file compile to different code, so their results don't change.
+        self.assertEqual([state for state in self.mutant_states() if state[0] != 22], SINGLE_TEST_STATES)
+        self.assertEqual([event["state"] for event in self.mutant_events() if event["line"] == 22], ["equivalent"])
+        report = json.loads((self.report_dir / "report.json").read_text())
+        mutants = report["files"]["src/sample.cpp"]["mutants"]
+        self.assertEqual(
+            [mutant["status"] for mutant in mutants if mutant["location"]["start"]["line"] == 22], ["Ignored"]
+        )
+
+        _, second, _ = self.run_sample_tests("lexer")
+
+        self.assertIn("1 to compile to the original code", second)
+        self.assertIn("compiles to the same code as the original, known from the cache", second)
+
+    def test_no_equivalence_runs_the_tests_of_an_equivalent_mutant(self) -> None:
+        self.add_an_equivalent_mutant()
+
+        exit_code, stdout, _ = run_strain(
+            *("--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir)),
+            *("-R", "^sample_tests$", "--engine", "lexer", "--no-equivalence"),
+        )
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertIn("--no-equivalence: every mutant that builds runs its tests", stdout)
+        self.assertEqual(self.equivalent_state(), "survived")
+
+    @unittest.skipUnless(shutil.which("ninja"), "needs ninja")
+    def test_a_ninja_build_runs_ninja_directly(self) -> None:
+        configure_project(self.root, self.build_dir, generator="Ninja")
+
+        exit_code, stdout, _ = self.run_sample_tests("lexer")
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertIn("✓ building with ninja directly, without cmake --build", stdout)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+        self.assertEqual((self.root / "src" / "sample.cpp").read_bytes(), self.original_source)
+
+    def test_no_direct_build_rebuilds_with_cmake_build(self) -> None:
+        configure_project(self.root, self.build_dir)
+
+        exit_code, stdout, _ = run_strain(
+            *("--build-dir", str(self.build_dir), "--report-dir", str(self.report_dir)),
+            *("-R", "^sample_tests$", "--engine", "lexer", "--no-direct-build"),
+        )
+
+        self.assertEqual(exit_code, 0, stdout)
+        self.assertNotIn("directly, without cmake --build", stdout)
+        self.assertEqual(self.mutant_states(), SINGLE_TEST_STATES)
+
     def test_survivors_of_weak_tests_group_into_the_patterns_that_name_the_missing_tests(self) -> None:
         (self.root / "include" / "sample.hpp").write_text(RECOGNISER_HEADER)
         (self.root / "src" / "sample.cpp").write_text(RECOGNISER_SOURCE)

@@ -27,6 +27,7 @@ MUTATION_TESTING_ELEMENTS_STATUS = {
     MutantState.SURVIVED: "Survived",
     MutantState.SKIPPED_UNEVALUATED: "Ignored",
     MutantState.COMPILE_ERROR: "CompileError",
+    MutantState.EQUIVALENT: "Ignored",
     MutantState.IGNORED: "Ignored",
 }
 NOT_REACHED_HINT = "add a test input that takes the other branch"

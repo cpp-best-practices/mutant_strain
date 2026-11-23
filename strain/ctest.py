@@ -2,9 +2,11 @@
 
 import json
 import math
+import os
 import re
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,7 +45,8 @@ def executables_by_test(build_dir: Path) -> dict[str, Path]:
     return executables
 
 
-def run_test(build_dir: Path, name: str, timeout: float) -> RunResult:
+def run_test(build_dir: Path, name: str, timeout: float, environment: Mapping[str, str] | None = None) -> RunResult:
+    """Runs test `name`, with `environment` added to strain's own."""
     command = [
         "ctest",
         "--verbose",
@@ -61,6 +64,7 @@ def run_test(build_dir: Path, name: str, timeout: float) -> RunResult:
             text=True,
             errors="replace",
             timeout=timeout + KILL_GRACE_SECONDS,
+            env=None if environment is None else {**os.environ, **environment},
         )
     except subprocess.TimeoutExpired as expired:
         output = expired.output if isinstance(expired.output, str) else ""

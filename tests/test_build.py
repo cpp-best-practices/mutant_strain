@@ -7,17 +7,22 @@ from pathlib import Path
 
 from strain.build import (
     BuildClock,
+    BuildTool,
     CompileCommand,
     CompilationDatabase,
     CompilerIdentity,
     build,
     build_command,
     cmake_is_true,
+    direct_build_tool,
+    direct_jobs,
     generator_warning,
+    linker_advice,
     parallel_jobs,
     read_cmake_cache,
     read_cxx_compiler,
     target_artifacts,
+    ToolKind,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_project"
@@ -66,13 +71,23 @@ class CompilationDatabaseTest(unittest.TestCase):
     def test_unknown_file(self) -> None:
         self.assertIsNone(self.database.command_for(Path("/work/include/math.hpp")))
 
-    def test_syntax_only_arguments_drop_outputs_and_dependency_files(self) -> None:
-        command = self.database.command_for(Path("/work/src/math.cpp"))
-        assert command is not None
-        self.assertEqual(
-            command.syntax_only_arguments(),
-            ["/usr/bin/g++", "-I/work/include", "--coverage", "/work/src/math.cpp", "-fsyntax-only"],
+    def test_the_object_each_command_writes(self) -> None:
+        self.assertEqual(self.database.outputs(), [Path("/work/build/obj.o"), Path("/work/build/t.o")])
+
+    def test_an_attached_output_flag(self) -> None:
+        command = CompileCommand(Path("/b"), Path("/b/a.cpp"), ("g++", "-oout/a.o", "-c", "a.cpp"))
+        self.assertEqual(command.output, Path("/b/out/a.o"))
+
+    def test_a_command_without_an_output(self) -> None:
+        self.assertIsNone(CompileCommand(Path("/b"), Path("/b/a.cpp"), ("g++", "-c", "a.cpp")).output)
+
+    def test_every_command_of_a_source_built_into_two_targets(self) -> None:
+        entry = {"directory": "/work/build", "file": "/work/src/a.cpp"}
+        database = CompilationDatabase.from_entries(
+            [{**entry, "command": "g++ -o one.o -c /work/src/a.cpp"}, {**entry, "command": "g++ -o two.o -c a.cpp"}]
         )
+        outputs = [command.output for command in database.commands_for(Path("/work/src/a.cpp"))]
+        self.assertEqual(outputs, [Path("/work/build/one.o"), Path("/work/build/two.o")])
 
     def test_commands_are_listed(self) -> None:
         self.assertEqual(
@@ -82,7 +97,7 @@ class CompilationDatabaseTest(unittest.TestCase):
 
     def test_compile_command_is_a_value(self) -> None:
         command = CompileCommand(directory=Path("/b"), file=Path("/b/a.cpp"), arguments=("g++", "-c", "a.cpp"))
-        self.assertEqual(command.syntax_only_arguments(), ["g++", "a.cpp", "-fsyntax-only"])
+        self.assertEqual(command, CompileCommand(Path("/b"), Path("/b/a.cpp"), ("g++", "-c", "a.cpp")))
 
 
 class SymlinkedCompilationDatabaseTest(unittest.TestCase):
@@ -166,6 +181,104 @@ class GeneratorTest(unittest.TestCase):
         self.assertEqual(build_command(Path("b")), ["cmake", "--build", "b"])
 
 
+class DirectBuildToolTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.build_dir = Path(self._tmp.name)
+        self.program = self.build_dir / "tool"
+        self.program.write_text("#!/bin/sh\n")
+        self.program.chmod(0o755)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def cache(self, generator: str) -> dict[str, str]:
+        return {"CMAKE_GENERATOR": generator, "CMAKE_MAKE_PROGRAM": str(self.program)}
+
+    def test_ninja_and_make_run_directly(self) -> None:
+        (self.build_dir / "build.ninja").touch()
+        (self.build_dir / "Makefile").touch()
+        program = str(self.program)
+        self.assertEqual(direct_build_tool(self.build_dir, self.cache("Ninja")), BuildTool(ToolKind.NINJA, program))
+        self.assertEqual(
+            direct_build_tool(self.build_dir, self.cache("Unix Makefiles")), BuildTool(ToolKind.MAKE, program)
+        )
+
+    def test_generators_cmake_must_drive_stay_with_cmake_build(self) -> None:
+        (self.build_dir / "build.ninja").touch()
+        for generator in ("Ninja Multi-Config", "Visual Studio 17 2022", "Xcode", "NMake Makefiles", ""):
+            with self.subTest(generator=generator):
+                self.assertIsNone(direct_build_tool(self.build_dir, self.cache(generator)))
+
+    def test_a_missing_build_file_or_program_stays_with_cmake_build(self) -> None:
+        self.assertIsNone(direct_build_tool(self.build_dir, self.cache("Ninja")))
+        (self.build_dir / "build.ninja").touch()
+        missing = {"CMAKE_GENERATOR": "Ninja", "CMAKE_MAKE_PROGRAM": str(self.build_dir / "missing")}
+        self.assertIsNone(direct_build_tool(self.build_dir, missing))
+        self.assertIsNone(direct_build_tool(self.build_dir, {"CMAKE_GENERATOR": "Ninja"}))
+
+    def test_jobs_follow_what_cmake_build_would_pass(self) -> None:
+        ninja, make = BuildTool(ToolKind.NINJA, "ninja"), BuildTool(ToolKind.MAKE, "make")
+        self.assertIsNone(direct_jobs(ninja, {}, 8))
+        self.assertEqual(direct_jobs(make, {}, 8), 8)
+        self.assertIsNone(direct_jobs(make, {"MAKEFLAGS": "-j3"}, 8))
+        self.assertEqual(direct_jobs(ninja, {"CMAKE_BUILD_PARALLEL_LEVEL": "3"}, 8), 3)
+        self.assertEqual(direct_jobs(make, {"CMAKE_BUILD_PARALLEL_LEVEL": ""}, 8), 8)
+
+    def test_the_direct_command(self) -> None:
+        self.assertEqual(
+            build_command(Path("b"), "t", 4, BuildTool(ToolKind.MAKE, "/usr/bin/make")),
+            ["/usr/bin/make", "-C", "b", "-j", "4", "t"],
+        )
+        self.assertEqual(build_command(Path("b"), tool=BuildTool(ToolKind.NINJA, "ninja")), ["ninja", "-C", "b"])
+
+
+def found(*programs: str):
+    return lambda name: f"/usr/bin/{name}" if name in programs else None
+
+
+class LinkerAdviceTest(unittest.TestCase):
+    def test_an_installed_fast_linker_is_recommended(self) -> None:
+        advice = linker_advice({}, found("mold", "ld.lld"), "linux")
+        assert advice is not None
+        self.assertIn("-DCMAKE_LINKER_TYPE=MOLD", advice)
+        self.assertIn("-fuse-ld=mold", advice)
+        lld = linker_advice({}, found("ld.lld"), "linux")
+        assert lld is not None
+        self.assertIn("-DCMAKE_LINKER_TYPE=LLD", lld)
+
+    def test_without_a_fast_linker_installing_one_is_recommended(self) -> None:
+        advice = linker_advice({}, found(), "linux")
+        assert advice is not None
+        self.assertIn("install mold or lld", advice)
+
+    def test_a_build_that_already_links_fast_gets_no_advice(self) -> None:
+        for cache in (
+            {"CMAKE_LINKER_TYPE": "MOLD"},
+            {"CMAKE_LINKER_TYPE": "lld"},
+            {"CMAKE_EXE_LINKER_FLAGS": "--coverage -fuse-ld=mold"},
+            {"CMAKE_BUILD_TYPE": "Debug", "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fuse-ld=lld"},
+            {"CMAKE_CXX_FLAGS": "-fuse-ld=/opt/mold/bin/ld.mold"},
+        ):
+            with self.subTest(cache=cache):
+                self.assertIsNone(linker_advice(cache, found("mold"), "linux"))
+
+    def test_ld_that_is_mold_needs_no_advice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            mold = Path(tmp) / "mold"
+            mold.touch()
+            ld = Path(tmp) / "ld"
+            ld.symlink_to(mold)
+            self.assertIsNone(linker_advice({"CMAKE_LINKER": str(ld)}, found("mold"), "linux"))
+
+    def test_gold_is_not_fast_enough_to_skip_the_advice(self) -> None:
+        self.assertIsNotNone(linker_advice({"CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=gold"}, found("mold"), "linux"))
+
+    def test_platforms_with_fast_default_linkers_get_no_advice(self) -> None:
+        self.assertIsNone(linker_advice({}, found("mold"), "darwin"))
+        self.assertIsNone(linker_advice({}, found("mold"), "win32"))
+
+
 class BuildFolderTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -231,6 +344,13 @@ class TargetBuildTest(unittest.TestCase):
         self.assertTrue(build(self.build_dir, "sample_tests"))
         self.assertTrue((self.build_dir / "sample_tests").is_file())
         self.assertFalse((self.build_dir / "other_tests").exists())
+
+    def test_the_generated_build_tool_builds_a_target_directly(self) -> None:
+        tool = direct_build_tool(self.build_dir, read_cmake_cache(self.build_dir))
+        assert tool is not None
+        self.assertTrue(build(self.build_dir, "other_tests", tool=tool))
+        self.assertTrue((self.build_dir / "other_tests").is_file())
+        self.assertFalse((self.build_dir / "sample_tests").exists())
 
 
 if __name__ == "__main__":

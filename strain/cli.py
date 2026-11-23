@@ -32,10 +32,16 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
         "--strategy",
         type=Strategy,
         choices=list(Strategy),
-        default=Strategy.PER_TEST,
-        help="per-test (rebuild each mutant for each test) or per-mutant (build each mutant once, run until killed)",
+        default=Strategy.PER_MUTANT,
+        help="per-mutant (build each mutant once, run its tests until one kills it) or per-test (rebuild each mutant "
+        "for each test, to see every test that kills it)",
     )
-    parser.add_argument("--skip-killed", action="store_true", help="skip mutants an earlier test already killed")
+    parser.add_argument(
+        "--skip-killed",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="with --strategy per-test, skip the mutants an earlier test already killed (default: on)",
+    )
     parser.add_argument(
         "--order",
         type=Order,
@@ -48,6 +54,18 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
         dest="build_cache",
         action="store_false",
         help="forget mutants earlier runs at this commit found to break the build, and do not remember new ones",
+    )
+    parser.add_argument(
+        "--no-direct-build",
+        dest="direct_build",
+        action="store_false",
+        help="rebuild with `cmake --build` instead of running ninja or make directly",
+    )
+    parser.add_argument(
+        "--no-equivalence",
+        dest="equivalence",
+        action="store_false",
+        help="run the tests of mutants that compile to the same object code as the original",
     )
 
 
@@ -111,6 +129,8 @@ def options_from_arguments(arguments: argparse.Namespace) -> RunOptions:
         strategy=arguments.strategy,
         order=arguments.order,
         build_cache=arguments.build_cache,
+        direct_build=arguments.direct_build,
+        equivalence=arguments.equivalence,
         engine=arguments.engine,
         safety_nets=arguments.safety_nets,
         threshold=arguments.threshold,

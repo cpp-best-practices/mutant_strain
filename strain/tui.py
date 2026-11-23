@@ -70,6 +70,7 @@ STATE_GLYPHS = {
     MutantState.SURVIVED: "✗",
     MutantState.SKIPPED_UNEVALUATED: "·",
     MutantState.COMPILE_ERROR: "⊘",
+    MutantState.EQUIVALENT: "≡",
     MutantState.IGNORED: "○",
     RUNNING: "▶",
     PENDING: "·",
@@ -81,6 +82,7 @@ STATE_STYLES = {
     MutantState.SURVIVED: "bold red",
     MutantState.SKIPPED_UNEVALUATED: "dim",
     MutantState.COMPILE_ERROR: "dim",
+    MutantState.EQUIVALENT: "dim",
     MutantState.IGNORED: "dim",
     RUNNING: "bold cyan",
     PENDING: "dim",
@@ -89,6 +91,7 @@ STATE_STYLES = {
 SHORT_STATES = {
     MutantState.KILLED_BY_SANITIZER: "sanitizer",
     MutantState.COMPILE_ERROR: "no build",
+    MutantState.EQUIVALENT: "same code",
     MutantState.SKIPPED_UNEVALUATED: "skipped",
 }
 STATE_COLUMN_WIDTH = 2 + max(len(SHORT_STATES.get(state, state)) for state in [*MutantState, RUNNING, PENDING])

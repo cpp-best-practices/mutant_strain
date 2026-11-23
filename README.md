@@ -130,22 +130,30 @@ queue.
 
 ## How it works
 
-For each selected test:
-
-1. **Baseline:** run the test unmutated and collect its coverage. If it fails, reports UB or times out, it's excluded.
-2. **Generate mutants** on the lines this test executed, in a fixed, reproducible order.
+1. **Baseline:** run each selected test unmutated and collect its coverage. If it fails, reports UB or times out, it's excluded.
+2. **Generate mutants** on the lines the tests executed. The cheapest files go first, and each file's mutants stay together, cheapest first (`--order source` keeps file and offset order).
 3. For each mutant:
-   1. Mutate the source, with the original saved to a journal first.
-   2. Reject it early if `-fsyntax-only` fails, or without touching the source if it is [known to break the build](#build-cache).
-   3. Rebuild incrementally with `cmake --build`.
-   4. Run the test and classify the result.
-   5. Restore the file, always, even on Ctrl-C.
+   1. Skip it without touching the source if it's [known](#build-cache) to break the build or to compile to the original code.
+   2. Mutate the source, with the original saved to a journal first.
+   3. Rebuild incrementally. strain runs ninja or make directly when CMake generated the build folder for one of them, and `cmake --build` otherwise or with `--no-direct-build`.
+   4. If every object the build wrote again holds the same code as the unmutated build's, the mutant is `equivalent` and no test runs. `--no-equivalence` turns this off.
+   5. Run the covering tests, fastest first, until one detects the mutant. The coverage data these runs write goes to a scratch folder that is then deleted, since only the baselines' coverage is read.
+   6. Restore the file, always, even on Ctrl-C.
+
+`--strategy per-test` instead runs the steps for one test at a time, rebuilding each mutant for every test, so the reports show every test that kills a mutant. By default it skips mutants an earlier test already killed; `--no-skip-killed` runs them too.
 
 Interrupted runs continue with `--resume`.
 
+### Speed
+
+Most of a mutant's time goes into rebuilding, so strain checks the build folder and suggests what makes rebuilds faster:
+
+- **Ninja** (`-G Ninja`) decides what to rebuild faster than make.
+- **A fast linker:** every mutant relinks its test program, and with sanitizers and coverage GNU ld can take longer than the compile. On Linux, strain suggests mold or lld when the build uses neither: `-DCMAKE_LINKER_TYPE=MOLD` (CMake 3.29+) or `-fuse-ld=mold` in `CMAKE_EXE_LINKER_FLAGS` and `CMAKE_SHARED_LINKER_FLAGS`.
+
 ### Build cache
 
-A mutant that doesn't compile is a `compile_error` for every test, so strain builds it only once:
+A mutant that doesn't compile is a `compile_error` for every test, and one that compiles to the original code is `equivalent` for every test, so strain builds each only once:
 
 - Later tests in the same run, and later runs, report it straight away, with no mutation and no rebuild.
 - The cache lives in `<build-dir>/strain-cache/`, one file per commit and compilation database. A new commit or a reconfigured build starts with an empty cache.
@@ -161,6 +169,7 @@ A mutant that doesn't compile is a `compile_error` for every test, so strain bui
 | `survived` | All tests passed | Yes |
 | `skipped_unevaluated` | Operand never evaluated by this test | No |
 | `compile_error` | Didn't compile | No |
+| `equivalent` | Compiled to the same object code as the original, so no test can detect it | No |
 | `ignored` | Suppressed by config or `// mutate-off` | No |
 
 Survivors are labeled `not_reached` (needs a new test input) or `not_detected` (needs a stronger assertion) when branch coverage is available.
@@ -193,9 +202,12 @@ strain run --safety-nets=warn
 | `--build-dir` | `.` | CMake build folder |
 | `-R` / `-E` | | Include / exclude tests by regex, as in ctest |
 | `--since <ref>` | | Mutate only lines changed since a git ref |
-| `--strategy` | `per-test` | `per-test`, or `per-mutant`: build each mutant once and run its covering tests, fastest first, until one detects it |
-| `--skip-killed` | off | Skip mutants an earlier test already killed |
+| `--strategy` | `per-mutant` | `per-mutant`: build each mutant once and run its covering tests, fastest first, until one detects it; or `per-test`: rebuild each mutant for every test, to see every test that kills it |
+| `--skip-killed` / `--no-skip-killed` | on | With `per-test`, skip mutants an earlier test already killed |
+| `--order` | `cost` | `cost`: cheapest files first, each file's mutants together; or `source`: by file and offset |
 | `--no-build-cache` | off | Don't reuse or save the [build cache](#build-cache) |
+| `--no-direct-build` | off | Rebuild with `cmake --build` instead of running ninja or make directly |
+| `--no-equivalence` | off | Run the tests of mutants that compile to the original object code |
 | `--engine` | `auto` | `cppcheck`, `tree-sitter`, `lexer` |
 | `--coverage` | `auto` | `gcov`, `llvm-cov`, `lcov`, `gcovr` |
 | `--ui` | `auto` | `live`, `log`, `json` |

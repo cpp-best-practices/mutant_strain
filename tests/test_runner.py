@@ -1,4 +1,7 @@
 import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -57,6 +60,28 @@ class ResumeTest(unittest.TestCase):
         self.runner.run_covering_tests.assert_not_called()  # type: ignore[attr-defined]
 
 
+@unittest.skipUnless(shutil.which("g++"), "needs g++")
+class DiscardedCoverageTest(unittest.TestCase):
+    """Mutant runs write their coverage data to a scratch folder that is deleted, not into the build folder."""
+
+    def test_a_mutant_run_leaves_no_coverage_data_behind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            build = Path(tmp) / "build"
+            build.mkdir()
+            (build / "a.cpp").write_text("int main() { return 0; }\n")
+            subprocess.run(["g++", "--coverage", "a.cpp", "-o", "a"], cwd=build, check=True, capture_output=True)
+            runner = object.__new__(Runner)
+            runner.coverage_sink = Path(tmp)
+
+            with runner.discarded_coverage() as environment:
+                subprocess.run([str(build / "a")], env={**os.environ, **environment}, check=True)
+                sink = Path(environment["GCOV_PREFIX"])
+                self.assertTrue(list(sink.rglob("*.gcda")))
+
+            self.assertEqual(list(build.rglob("*.gcda")), [])
+            self.assertFalse(sink.exists())
+
+
 def covered(mutant: Mutant, *durations: float) -> CoveredMutant:
     source = mock.sentinel.source
     return CoveredMutant(
@@ -74,9 +99,16 @@ class OrderTest(unittest.TestCase):
         self.other = covered(Mutant("src/b.cpp", 2, 5, 10, "lcr", "&&", "||"), 1.0)
         self.planned = [self.central, self.leaf, self.other]
 
-    def test_cost_order_runs_the_mutants_with_the_cheapest_covering_tests_first(self) -> None:
+    def test_cost_order_runs_the_cheapest_file_first_and_its_cheapest_mutants_first(self) -> None:
+        cheap = covered(Mutant("src/a.cpp", 5, 5, 50, "aor", "-", "+"), 0.1)
+        ordered = order_mutants([*self.planned, cheap], Order.COST, BuildTimes())
+        # a.cpp averages 4.0s a mutant and b.cpp 1.0s, so b.cpp goes first; within a.cpp the cheapest go first.
+        self.assertEqual(ordered, [self.other, cheap, self.leaf, self.central])
+
+    def test_cost_order_keeps_the_mutants_of_a_file_together(self) -> None:
         ordered = order_mutants(self.planned, Order.COST, BuildTimes())
-        self.assertEqual(ordered, [self.leaf, self.other, self.central])
+        # leaf alone is cheaper than other, but going to b.cpp and back would compile a.cpp once more.
+        self.assertEqual(ordered, [self.other, self.leaf, self.central])
 
     def test_cost_order_counts_what_building_each_file_took(self) -> None:
         builds = BuildTimes()

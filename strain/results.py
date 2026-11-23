@@ -20,6 +20,7 @@ class MutantState(enum.StrEnum):
     SURVIVED = "survived"
     SKIPPED_UNEVALUATED = "skipped_unevaluated"
     COMPILE_ERROR = "compile_error"
+    EQUIVALENT = "equivalent"
     IGNORED = "ignored"
 
 

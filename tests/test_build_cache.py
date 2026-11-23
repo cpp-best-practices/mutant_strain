@@ -45,6 +45,21 @@ class BuildFailureCacheTest(unittest.TestCase):
         self.assertIsNone(reloaded.failure(SAME_ID_ELSEWHERE))
         self.assertEqual(len(reloaded), 1)
 
+    def test_equivalent_mutants_survive_a_reload(self) -> None:
+        BuildFailureCache.load(self.path).add_equivalent(BROKEN)
+
+        reloaded = BuildFailureCache.load(self.path)
+
+        self.assertTrue(reloaded.is_equivalent(BROKEN))
+        self.assertFalse(reloaded.is_equivalent(SAME_ID_ELSEWHERE))
+        self.assertEqual((len(reloaded), reloaded.equivalent_count), (0, 1))
+
+    def test_a_cache_written_before_equivalents_were_recorded_still_loads(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps({"version": 1, "build_failures": {BROKEN.key: "build failed"}}))
+        cache = BuildFailureCache.load(self.path)
+        self.assertEqual((len(cache), cache.equivalent_count), (1, 0))
+
     def test_an_in_memory_cache_writes_nothing(self) -> None:
         cache = BuildFailureCache()
         cache.add(BROKEN, "build failed")

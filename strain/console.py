@@ -29,6 +29,7 @@ STATE_STYLES: Mapping[str, str] = {
     MutantState.SURVIVED: BOLD + RED,
     MutantState.SKIPPED_UNEVALUATED: DIM,
     MutantState.COMPILE_ERROR: DIM,
+    MutantState.EQUIVALENT: DIM,
     MutantState.IGNORED: DIM,
 }
 STATE_WIDTH = max(len(state) for state in MutantState)

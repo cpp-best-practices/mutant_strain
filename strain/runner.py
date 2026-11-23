@@ -4,6 +4,8 @@ import enum
 import json
 import os
 import shlex
+import shutil
+import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -14,12 +16,16 @@ from typing import TextIO
 from . import NAME, ctest, git
 from .build import (
     BuildClock,
+    BuildTool,
     CompilationDatabase,
     CompileCommand,
     Target,
     build,
     build_command,
+    direct_build_tool,
+    direct_jobs,
     generator_warning,
+    linker_advice,
     parallel_jobs,
     read_cmake_cache,
     read_cxx_compiler,
@@ -31,6 +37,7 @@ from .console import BOLD, DIM, RED, STATE_STYLES, YELLOW, UiMode, create_consol
 from .coverage import FileCoverage, GcovCoverage
 from .estimate import BuildTimes, Eta, Order, format_eta
 from .journal import Journal
+from .objects import ObjectFingerprints
 from .mutators import (
     Engine,
     Mutant,
@@ -81,6 +88,9 @@ from .safety_nets import (
     resolve_levels,
 )
 
+EQUIVALENT_DETAIL = "compiles to the same code as the original"
+# RAM-backed, so the coverage data mutant runs write and strain throws away never reaches the disk.
+SHARED_MEMORY = Path("/dev/shm")  # noqa: S108 - only ever the parent of a private mkdtemp folder
 BASELINE_TIMEOUT_SECONDS = 600.0
 MINIMUM_TIMEOUT_SECONDS = 10.0
 TIMEOUT_FACTOR = 3.0
@@ -106,10 +116,12 @@ class RunOptions:
     include: str | None = None
     exclude: str | None = None
     since: str | None = None
-    skip_killed: bool = False
-    strategy: Strategy = Strategy.PER_TEST
+    skip_killed: bool = True
+    strategy: Strategy = Strategy.PER_MUTANT
     order: Order = Order.COST
     build_cache: bool = True
+    direct_build: bool = True
+    equivalence: bool = True
     engine: Engine = Engine.AUTO
     safety_nets: Level | None = None
     threshold: float | None = None
@@ -193,11 +205,23 @@ def mutant_cost(entry: CoveredMutant, build_times: BuildTimes) -> float:
 
 
 def order_mutants(covered: Sequence[CoveredMutant], order: Order, build_times: BuildTimes) -> list[CoveredMutant]:
-    """By file and offset, then for `Order.COST` the cheapest first, so an interrupted run has covered the most."""
+    """By file and offset, then for `Order.COST` the cheapest files first, so an interrupted run has covered the most.
+
+    The mutants of a file stay together, cheapest first: restoring a file means compiling it again, so going from
+    one file to another and back costs a compile that staying in the file does not.
+    """
     ordered = sorted(covered, key=lambda entry: by_source(entry.planned))
     if order is Order.SOURCE:
         return ordered
-    return sorted(ordered, key=lambda entry: mutant_cost(entry, build_times))
+    costs = {id(entry): mutant_cost(entry, build_times) for entry in ordered}
+    by_file: dict[str, list[float]] = {}
+    for entry in ordered:
+        by_file.setdefault(entry.planned.mutant.file, []).append(costs[id(entry)])
+    file_cost = {file: sum(file_costs) / len(file_costs) for file, file_costs in by_file.items()}
+    return sorted(
+        ordered,
+        key=lambda entry: (file_cost[entry.planned.mutant.file], entry.planned.mutant.file, costs[id(entry)]),
+    )
 
 
 def order_planned(planned: Sequence[PlannedMutant], order: Order, build_times: BuildTimes) -> list[PlannedMutant]:
@@ -246,6 +270,9 @@ class Runner:
         self.build_is_mutated = False
         self.coverage_verified = False
         self.build_jobs: int | None = None
+        self.build_tool: BuildTool | None = None
+        self.objects: ObjectFingerprints | None = None
+        self.coverage_sink = SHARED_MEMORY if SHARED_MEMORY.is_dir() and os.access(SHARED_MEMORY, os.W_OK) else None
         self.build_times = BuildTimes()
         self.eta: Eta | None = None
         self.mutant_started_at = 0.0
@@ -259,9 +286,10 @@ class Runner:
         console.field("reports", str(self.options.report_dir), 7)
 
     def build(self, target: str | None = None) -> bool:
-        self.console.build_started(shlex.join(build_command(Path(short_path(self.build_dir)), target, self.build_jobs)))
+        tool, jobs = self.build_tool, self.build_jobs
+        self.console.build_started(shlex.join(build_command(Path(short_path(self.build_dir)), target, jobs, tool)))
         try:
-            return build(self.build_dir, target, self.console.build_output, self.build_jobs)
+            return build(self.build_dir, target, self.console.build_output, jobs, tool)
         finally:
             self.build_clock.build_finished()
 
@@ -293,6 +321,7 @@ class Runner:
             "unmutated build is up to date",
             f"`cmake --build {self.build_dir}` fails before any mutation",
         )
+        self.fingerprint_objects()
         self.test_targets = self.find_test_targets()
         self.load_build_cache()
         if self.options.since is not None:
@@ -304,12 +333,27 @@ class Runner:
 
     def check_generator(self) -> None:
         cache = read_cmake_cache(self.build_dir)
-        warning = generator_warning(cache)
-        if warning is not None:
-            self.console.warn(warning)
+        for warning in (generator_warning(cache), linker_advice(cache)):
+            if warning is not None:
+                self.console.warn(warning)
+        self.build_tool = direct_build_tool(self.build_dir, cache) if self.options.direct_build else None
+        if self.build_tool is not None:
+            self.build_jobs = direct_jobs(self.build_tool, os.environ, os.cpu_count())
+            jobs = "" if self.build_jobs is None else f" -j {self.build_jobs}"
+            self.console.step(f"building with {self.build_tool.kind}{jobs} directly, without cmake --build")
+            return
         self.build_jobs = parallel_jobs(cache, os.environ, os.cpu_count())
         if self.build_jobs is not None:
             self.console.step(f"building with --parallel {self.build_jobs}")
+
+    def fingerprint_objects(self) -> None:
+        """Remembers the code in every object of the unmutated build, to spot mutants that compile to the same code."""
+        if not self.options.equivalence:
+            self.console.note("--no-equivalence: every mutant that builds runs its tests")
+            return
+        self.objects = ObjectFingerprints.of(self.database.outputs())
+        known = sum(fingerprint is not None for fingerprint in self.objects.originals.values())
+        self.console.step(f"fingerprinted {plural(known, 'object file')} to spot equivalent mutants")
 
     def load_build_cache(self) -> None:
         """Loads the mutants earlier runs found to break the build at this commit, with this build configuration."""
@@ -320,7 +364,9 @@ class Runner:
         path = cache_path(self.build_dir, git.head_commit(self.source_dir), compile_database)
         self.build_failures = BuildFailureCache.load(path)
         known = plural(len(self.build_failures), "mutant")
-        self.console.step(f"build cache: {known} known to break the build at this commit")
+        equivalent = self.build_failures.equivalent_count
+        also = f", {equivalent} to compile to the original code" if equivalent else ""
+        self.console.step(f"build cache: {known} known to break the build at this commit{also}")
 
     def resolve_engine(self) -> Engine:
         try:
@@ -455,26 +501,40 @@ class Runner:
         targets = [self.target_for(test) for test in tests]
         return [None] if None in targets else list(dict.fromkeys(targets))
 
-    def build_failure(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> str | None:
-        """Compiles the mutated source; returns why it does not build, or None when it does."""
-        command = self.database.command_for(planned.source.path)
-        self.console.status(f"{label}  checking syntax…")
-        if command is not None and not command.passes_syntax_check():
-            return "rejected by -fsyntax-only"
+    def build_failure(self, targets: Sequence[str | None], label: str) -> str | None:
+        """Builds the mutated sources; returns why they do not build, or None when they do."""
         self.console.status(f"{label}  building…")
+        if self.objects is not None:
+            self.objects.snapshot()
         if not all(self.build(target) for target in targets):
             return "build failed"
         return None
 
+    def compiles_to_the_original(self, planned: PlannedMutant) -> bool:
+        """Whether the build just made holds the same code as the unmutated one.
+
+        The objects of the mutated file must be among those rebuilt, so a build that missed the change counts for
+        nothing, and every object rebuilt must match the original's: one that differs, such as another file that
+        includes the mutated one, holds the mutant. Headers have no object of their own, so they are never checked.
+        """
+        if self.objects is None:
+            return False
+        own = {output for command in self.database.commands_for(planned.source.path) if (output := command.output)}
+        rebuilt = self.objects.rebuilt()
+        return bool(own.intersection(rebuilt)) and self.objects.all_original(rebuilt)
+
     def build_mutant(self, planned: PlannedMutant, targets: Sequence[str | None], label: str) -> Outcome | None:
-        """Compiles the mutated source; returns the compile error outcome, and remembers it, when it does not build."""
+        """Builds the mutant; returns its outcome when it doesn't build or is equivalent, remembering either."""
         start = time.monotonic()
-        failure = self.build_failure(planned, targets, label)
+        failure = self.build_failure(targets, label)
         self.observe_build(planned.mutant.file, time.monotonic() - start)
-        if failure is None:
-            return None
-        self.build_failures.add(planned.mutant, failure)
-        return Outcome(MutantState.COMPILE_ERROR, detail=failure)
+        if failure is not None:
+            self.build_failures.add(planned.mutant, failure)
+            return Outcome(MutantState.COMPILE_ERROR, detail=failure)
+        if self.compiles_to_the_original(planned):
+            self.build_failures.add_equivalent(planned.mutant)
+            return Outcome(MutantState.EQUIVALENT, detail=EQUIVALENT_DETAIL)
+        return None
 
     def observe_build(self, file: str, seconds: float) -> None:
         self.build_times.observe(file, seconds)
@@ -499,15 +559,32 @@ class Runner:
         return None if self.eta is None else self.eta.remaining()
 
     def known_build_failure(self, planned: PlannedMutant) -> Outcome | None:
-        """The compile error a mutant known to break the build gets without mutating or building anything."""
+        """The outcome a mutant known to break the build, or to compile to the original code, gets without building."""
+        if self.objects is not None and self.build_failures.is_equivalent(planned.mutant):
+            return Outcome(MutantState.EQUIVALENT, detail=f"{EQUIVALENT_DETAIL}, known from the cache")
         failure = self.build_failures.failure(planned.mutant)
         return (
             None if failure is None else Outcome(MutantState.COMPILE_ERROR, detail=f"{failure}, known from the cache")
         )
 
+    @contextmanager
+    def discarded_coverage(self) -> Iterator[dict[str, str]]:
+        """The environment that sends a mutant run's coverage data to a scratch folder, which is then deleted.
+
+        Only the baselines' coverage is read. Without this, every mutant run would merge its counters into the
+        build folder's .gcda files: reading, adding to and writing one per instrumented object.
+        """
+        root = self.coverage_sink
+        sink = Path(tempfile.mkdtemp(prefix="strain-gcov-", dir=root))
+        try:
+            yield {"GCOV_PREFIX": str(sink), "GCOV_PREFIX_STRIP": "0"}
+        finally:
+            shutil.rmtree(sink, ignore_errors=True)
+
     def run_mutated(self, test: str, timeout: float, coverage: FileCoverage, line: int, label: str) -> Outcome:
         self.console.status(f"{label}  running {test}…")
-        run = ctest.run_test(self.build_dir, test, timeout)
+        with self.discarded_coverage() as environment:
+            run = ctest.run_test(self.build_dir, test, timeout, environment)
         state = classify_run(run)
         survivor = survivor_kind(coverage, line) if state is MutantState.SURVIVED else None
         return Outcome(
